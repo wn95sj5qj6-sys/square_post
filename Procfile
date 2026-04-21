@@ -1,0 +1,1 @@
+console: python main.py
