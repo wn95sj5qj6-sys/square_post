@@ -7,7 +7,6 @@ import logging
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__)
 
-# ================= 配置 =================
 DATA_FILE = "/tmp/records.json"
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
 BINANCE_ACCOUNTS = os.getenv("BINANCE_ACCOUNTS", "").strip()
@@ -51,7 +50,6 @@ def get_account_name_by_key(api_key):
             return acc["name"]
     return "未知账号"
 
-# ================= 页面 =================
 MAIN_PAGE = """
 <!DOCTYPE html>
 <meta charset="utf-8">
@@ -168,7 +166,6 @@ RECORD_PAGE = """
 </script>
 """
 
-# ================= 接口 =================
 @app.route('/')
 def index():
     return render_template_string(MAIN_PAGE, accounts=get_accounts())
@@ -189,14 +186,11 @@ def run():
         from post_main import post_content
 
         log += "✅ 开始执行\n"
-        topic = run_topic()
-        log += f"✅ 抓取完成\n📢 交易对：{topic.get('symbol','')}\n"
-        log += f"💰 价格：{topic.get('price','')}\n"
-        log += f"📈 涨幅：{topic.get('change','')}%\n"
-        log += f"🔥 趋势：{topic.get('trend','')}\n\n"
+        topic_text = run_topic()  # 直接返回字符串
+        log += f"✅ 抓取完成\n📢 行情信息：\n{topic_text}\n\n"
 
         log += "✅ AI写作中...\n"
-        content,_ = generate_content(topic["text"], ZHIPU_API_KEY)
+        content, _ = generate_content(topic_text, ZHIPU_API_KEY)
         if not content:
             log += "❌ AI生成失败"
             return jsonify({"log":log})
@@ -206,7 +200,8 @@ def run():
         ok, msg, post_id = post_content(content, key)
         if ok:
             log += f"🎉 发布成功！\n{msg}"
-            save_record(get_account_name_by_key(key), topic['symbol'], content, post_id)
+            acc_name = get_account_name_by_key(key)
+            save_record(acc_name, "自动抓取", content, post_id)
         else:
             log += f"❌ 发布失败：{msg}"
         return jsonify({"log":log})
