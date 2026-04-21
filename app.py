@@ -33,7 +33,8 @@ INDEX_HTML = """
     .box{max-width:480px;margin:0 auto}
     .card{background:#fff;border-radius:16px;padding:22px;box-shadow:0 4px 12px rgba(0,0,0,0.05);margin-bottom:20px}
     .title{font-size:19px;font-weight:bold;margin-bottom:18px;display:flex;align-items:center;gap:8px}
-    select,button{width:100%;padding:15px;border-radius:12px;border:1px solid #ddd;font-size:15px;margin-bottom:12px;background:#fff}
+    .label{font-size:14px;color:#555;margin-bottom:6px;font-weight:bold}
+    select,button,input{width:100%;padding:15px;border-radius:12px;border:1px solid #ddd;font-size:15px;margin-bottom:12px;background:#fff}
     button{background:#007AFF;color:#fff;border:none;font-weight:bold}
     #log{background:#f9f9f9;padding:16px;border-radius:12px;min-height:260px;white-space:pre-wrap;line-height:1.5;border:1px solid #eee}
     .menu{display:flex;gap:10px}
@@ -43,12 +44,14 @@ INDEX_HTML = """
 <div class="box">
     <div class="card">
         <div class="title"><i class="fa fa-paper-plane"></i> 币安广场发文</div>
+        <div class="label">选择发文账号</div>
         <select id="acc">
             {% for a in accounts %}
             <option value="{{a.key}}">{{a.name}}</option>
             {% endfor %}
         </select>
         <button onclick="run()"><i class="fa fa-rocket"></i> 开始发文</button>
+        <button onclick="clearLog()" style="background:#ff6b6b"><i class="fa fa-trash"></i> 清空日志</button>
         <div id="log">等待启动...</div>
     </div>
     <div class="menu">
@@ -59,9 +62,28 @@ INDEX_HTML = """
 
 <script>
     let log = document.getElementById('log');
-    function print(t){ log.textContent += t + '\\n'; }
+    
+    // 页面加载时恢复日志
+    window.onload = function() {
+        let last = localStorage.getItem('last_log');
+        if (last) log.textContent = last;
+    };
+
+    function print(t){ 
+        log.textContent += t + '\\n';
+        localStorage.setItem('last_log', log.textContent);
+    }
+
+    function clearLog(){
+        log.textContent = '';
+        localStorage.removeItem('last_log');
+    }
+
     function run(){
+        // 点击发文 → 清空旧日志
         log.textContent = "✅ 开始执行...\\n";
+        localStorage.setItem('last_log', log.textContent);
+        
         let key = document.getElementById("acc").value;
         fetch("/run", {
             method: "POST",
@@ -69,6 +91,8 @@ INDEX_HTML = """
             body: JSON.stringify({ key: key })
         }).then(res=>res.json()).then(data=>{
             log.textContent = data.log;
+            localStorage.setItem('last_log', data.log);
+            
             if(data.record){
                 let records = JSON.parse(localStorage.getItem("records") || "[]");
                 records.push(data.record);
@@ -92,7 +116,17 @@ RECORD_HTML = """
     .box{max-width:480px;margin:0 auto}
     .card{background:#fff;border-radius:16px;padding:22px;box-shadow:0 4px 12px rgba(0,0,0,0.05);margin-bottom:20px}
     .title{font-size:19px;font-weight:bold;margin-bottom:18px;display:flex;align-items:center;gap:8px}
-    select,input,button{width:100%;padding:15px;border-radius:12px;border:1px solid #ddd;font-size:15px;margin-bottom:10px;background:#fff}
+    .label{font-size:14px;color:#555;margin-bottom:6px;font-weight:bold}
+    select,input,button{
+        width:100% !important;
+        padding:15px;
+        border-radius:12px;
+        border:1px solid #ddd;
+        font-size:15px;
+        margin-bottom:10px;
+        background:#fff;
+        appearance:none;
+    }
     button{background:#007AFF;color:#fff;border:none;font-weight:bold}
     .item{background:#f9f9f9;padding:14px;border-radius:12px;margin-bottom:10px;border:1px solid #eee}
     .item .tit{color:#007AFF;font-weight:bold}
@@ -104,12 +138,17 @@ RECORD_HTML = """
 <div class="box">
     <div class="card">
         <div class="title"><i class="fa fa-history"></i> 发文记录</div>
+        
+        <div class="label">选择账号</div>
         <select id="acc">
             {% for a in accounts %}
             <option value="{{a.name}}">{{a.name}}</option>
             {% endfor %}
         </select>
+
+        <div class="label">选择日期</div>
         <input type="date" id="date">
+
         <button onclick="show()"><i class="fa fa-search"></i> 查询</button>
         <button onclick="exportAll()"><i class="fa fa-download"></i> 全量导出</button>
         <div id="list"></div>
