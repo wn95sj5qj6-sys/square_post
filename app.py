@@ -7,7 +7,12 @@ import logging
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 app = Flask(__name__)
 
-DATA_FILE = "/tmp/records.json"
+# 使用项目目录下的 data 文件夹，保证数据持久化
+DATA_DIR = "./data"
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+DATA_FILE = os.path.join(DATA_DIR, "records.json")
+
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
 BINANCE_ACCOUNTS = os.getenv("BINANCE_ACCOUNTS", "").strip()
 
@@ -47,7 +52,7 @@ def get_account_name(key):
             return acc["name"]
     return "未知"
 
-# ------------------------------ 发文页面 ------------------------------
+# ------------------------------ 发文页面（日志本地缓存） ------------------------------
 MAIN_PAGE = """
 <!DOCTYPE html>
 <meta charset="utf-8">
@@ -76,6 +81,7 @@ MAIN_PAGE = """
             {% endfor %}
         </select>
         <button onclick="run()">🚀 开始发文</button>
+        <button onclick="clearLog()">🗑️ 清空日志</button>
         <div id="log">等待启动...</div>
     </div>
     <div class="foot">
@@ -87,10 +93,30 @@ MAIN_PAGE = """
 <script>
     let log = document.getElementById('log');
     let btn = document.querySelector('button[onclick="run()"]');
-    function append(t){log.textContent += t + '\\n';window.scrollTo(0,9999)}
+
+    // 页面加载时，读取本地保存的日志
+    window.onload = function() {
+        let saved = localStorage.getItem('lastLog');
+        if (saved) {
+            log.textContent = saved;
+        }
+    }
+
+    function append(t){
+        log.textContent += t + '\\n';
+        localStorage.setItem('lastLog', log.textContent); // 每次追加都保存到本地
+        window.scrollTo(0,9999);
+    }
+
+    function clearLog(){
+        log.textContent = '';
+        localStorage.removeItem('lastLog');
+    }
+
     function run(){
         btn.disabled = true;
         log.textContent = '';
+        localStorage.removeItem('lastLog'); // 重新发文时清空
         append('✅ 开始执行发文流程...');
         fetch('/run',{
             method:'POST',
