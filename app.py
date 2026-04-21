@@ -104,7 +104,7 @@ def run():
         # 1. 抓取话题
         log += "✅ 正在抓取行情话题...\n"
         topic = run_topic()
-        log += f"📢 话题：{topic}\n\n"
+        log += f"📢 话题：{topic_text}\n\n"
 
         # 2. AI生成
         log += "✅ AI正在写作...\n"
