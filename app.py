@@ -2,79 +2,129 @@ from flask import Flask, render_template_string, request, jsonify
 import os
 import logging
 
-# 关闭多余日志，防止 Railway 限流
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
-
 app = Flask(__name__)
 
-# 读取环境变量
+# 账号格式：名字|key,名字|key,名字|key
+BINANCE_ACCOUNTS = os.getenv("BINANCE_ACCOUNTS", "").strip()
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
-BINANCE_KEYS = os.getenv("BINANCE_ACCOUNTS", "").strip().split(",")
-BINANCE_KEYS = [k.strip() for k in BINANCE_KEYS if k]
 
-# 导入你的业务逻辑
+def get_account_list():
+    accounts = []
+    if not BINANCE_ACCOUNTS:
+        return []
+    for item in BINANCE_ACCOUNTS.split(","):
+        item = item.strip()
+        if "|" not in item:
+            continue
+        name, key = item.split("|", 1)
+        name = name.strip()
+        key = key.strip()
+        if name and key:
+            accounts.append({"name": name, "key": key})
+    return accounts
+
 from topic_main import run_topic
 from ai_core import generate_content
-from post_main import post_with_key
+from post_main import post_content
 
-# 网页面板
 HTML = """
 <!DOCTYPE html>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>币安发文</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>币安广场发文助手</title>
 <style>
-  body{background:#121212;color:#fff;font-family:Arial;padding:20px}
-  .card{max-width:400px;margin:0 auto;background:#1e1e1e;padding:24px;border-radius:12px}
-  h2{color:#00ccff;text-align:center}
-  select,button{width:100%;padding:12px;margin:8px 0;border-radius:8px;border:none;background:#2a2a2a;color:#fff}
-  button{background:#00ccff;color:#000;font-weight:700;cursor:pointer}
-  #log{background:#111;padding:12px;border-radius:8px;margin-top:10px;min-height:100px;font-size:13px}
+    *{box-sizing:border-box}
+    body{background:#121212;color:#eaeaea;font-family:Arial;padding:15px;margin:0}
+    .card{max-width:480px;margin:0 auto;background:#1c1c1c;padding:20px;border-radius:14px}
+    h2{color:#00dfff;text-align:center;margin:0 0 16px}
+    select,button{width:100%;padding:14px;border-radius:10px;border:none;background:#272727;color:#fff;font-size:16px;margin-bottom:12px}
+    button{background:#00dfff;color:#000;font-weight:bold;cursor:pointer}
+    button:disabled{background:#444}
+    #log{background:#111;padding:14px;border-radius:10px;min-height:240px;white-space:pre-wrap;font-size:14px;line-height:1.5}
 </style>
-<div class=card>
-  <h2>📤 币安广场一键发文</h2>
-  <select id=acc>
-    {% for k in keys %}
-    <option value="{{k}}">账号 {{loop.index}}</option>
-    {% endfor %}
-  </select>
-  <button onclick=run()>🚀 开始发文</button>
-  <div id=log>等待操作...</div>
+
+<div class="card">
+    <h2>📤 币安广场自动发文</h2>
+    <select id="account">
+        {% for acc in accounts %}
+        <option value="{{acc.key}}">{{acc.name}}</option>
+        {% endfor %}
+    </select>
+    <button onclick="start()">🚀 开始发文</button>
+    <div id="log">等待启动...</div>
 </div>
+
 <script>
-  function run(){
-    document.getElementById('log').innerText = '执行中...'
-    fetch('/publish',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({key:document.getElementById('acc').value})
-    }).then(r=>r.json()).then(d=>{
-      document.getElementById('log').innerText = d.msg
-    })
-  }
+    let log = document.getElementById('log');
+    let btn = document.querySelector('button');
+
+    function append(text){
+        log.textContent += text + '\\n';
+        window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function start(){
+        btn.disabled = true;
+        log.textContent = '';
+        append('✅ 开始执行发文流程...');
+
+        let key = document.getElementById('account').value;
+        fetch('/run', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({key: key})
+        }).then(res => res.json()).then(data => {
+            append(data.log);
+            btn.disabled = false;
+        }).catch(e=>{
+            append('❌ 请求异常');
+            btn.disabled = false;
+        });
+    }
 </script>
 """
 
 @app.route('/')
-def home():
-    return render_template_string(HTML, keys=BINANCE_KEYS)
+def index():
+    accounts = get_account_list()
+    return render_template_string(HTML, accounts=accounts)
 
-@app.route('/publish', methods=['POST'])
-def pub():
+@app.route('/run', methods=['POST'])
+def run():
     try:
-        key = request.json.get('key', '').strip()
-        if not key or not ZHIPU_API_KEY:
-            return jsonify({"msg":"❌ 配置缺失"})
-        
+        api_key = request.json.get('key', '').strip()
+        if not api_key:
+            return jsonify({"log": "❌ 未选择账号"})
+        if not ZHIPU_API_KEY:
+            return jsonify({"log": "❌ 未配置AI密钥"})
+
+        log = ""
+
+        # 1. 抓取话题
+        log += "✅ 正在抓取行情话题...\n"
         topic = run_topic()
+        log += f"📢 话题：{topic}\n\n"
+
+        # 2. AI生成
+        log += "✅ AI正在写作...\n"
         content, _ = generate_content(topic, ZHIPU_API_KEY)
         if not content:
-            return jsonify({"msg":"❌ AI生成失败"})
-        
-        ok = post_with_key(content, key)
-        return jsonify({"msg":"🎉 发文成功！" if ok else "❌ 发文失败"})
+            log += "❌ AI生成失败"
+            return jsonify({"log": log})
+        log += f"📝 AI生成内容：\n{content}\n\n"
+
+        # 3. 发文
+        log += "✅ 正在发布到币安广场...\n"
+        ok, msg = post_content(content, api_key)
+        if ok:
+            log += f"🎉 {msg}"
+        else:
+            log += f"❌ {msg}"
+
+        return jsonify({"log": log})
     except Exception as e:
-        return jsonify({"msg":f"❌ 错误：{str(e)}"})
+        return jsonify({"log": f"❌ 异常：{str(e)}"})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
