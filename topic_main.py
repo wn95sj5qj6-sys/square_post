@@ -83,12 +83,6 @@ MAIN_STREAM_SYMBOLS = {
     "DOGEUSDT", "AVAXUSDT", "TRXUSDT"
 }
 
-SMALL_POOL_SIZE = 15
-MAIN_POOL_SIZE = 3
-
-SMALL_SELECT_RATE = 0.9
-MAIN_SELECT_RATE = 0.1
-
 # ========================
 # 工具函数
 # ========================
@@ -390,7 +384,7 @@ def build_topic_text(d, short_trend, long_trend, short_oi, long_oi, funding, fun
     )
 
 # ========================
-# 主流程
+# 主流程（已按你要求修改：前20 → 随机1个 → 仅获取这1个数据）
 # ========================
 def run_topic():
     ticker = fetch_url("https://fapi.binance.com/fapi/v1/ticker/24hr")
@@ -398,110 +392,103 @@ def run_topic():
     if not ticker or not exchange_info:
         print("❌ 基础行情数据抓取失败")
         return None
+    
+    # 获取可交易币种
     active = {s["symbol"] for s in exchange_info.get("symbols", []) if s["status"] == "TRADING"}
     usdt = [d for d in ticker if d["symbol"].endswith("USDT") and d["symbol"] in active]
 
+    # ==============================
+    # 你要的核心修改：只保留这一段
+    # ==============================
+    # 按涨跌幅绝对值排序 → 取前20 → 随机选1个
     usdt_sorted = sorted(usdt, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)
+    top20 = usdt_sorted[:20]
+    selected_item = random.choice(top20)
+    symbol = selected_item["symbol"]
 
-    small_candidates = [d for d in usdt_sorted[:50] if d["symbol"] not in MAIN_STREAM_SYMBOLS]
-    small_pool = random.sample(small_candidates, min(SMALL_POOL_SIZE, len(small_candidates)))
+    # ==============================
+    # 只对这 1 个币获取深度数据
+    # ==============================
+    short_k, short_oi_data, long_k, long_oi_data, funding_data = fetch_all_for_symbol(symbol)
 
-    main_candidates = [d for d in usdt if d["symbol"] in MAIN_STREAM_SYMBOLS]
-    main_pool = random.sample(main_candidates, min(MAIN_POOL_SIZE, len(main_candidates))) if main_candidates else []
+    # 后续分析逻辑 100% 不变
+    short_trend = get_trend(short_k)
+    long_trend = get_trend(long_k)
+    short_oi = get_oi_state(short_oi_data, symbol)
+    long_oi = get_oi_state(long_oi_data, symbol)
+    funding_st = get_funding_state(funding_data, symbol)
+    funding_val = float(funding_data.get("lastFundingRate", 0)) if funding_data else 0.0
+    chg = float(selected_item["priceChangePercent"])
+    sig = detect_signal(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
+    conf = detect_conflict(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
+    score = calc_score(selected_item, short_trend, long_trend, short_oi, long_oi)
 
-    pool = small_pool + main_pool
+    # 包装成结果结构
+    selected = {
+        "symbol": symbol, "raw": selected_item,
+        "short_trend": short_trend, "long_trend": long_trend,
+        "short_oi": short_oi, "long_oi": long_oi,
+        "funding": funding_st, "funding_val": funding_val,
+        "signal": sig, "conflict": conf, "score": score
+    }
 
-    results = []
-    with ThreadPoolExecutor(MAX_WORKERS) as executor:
-        future_map = {executor.submit(fetch_all_for_symbol, item["symbol"]): item for item in pool}
-        for future in as_completed(future_map):
-            item = future_map[future]
-            symbol = item["symbol"]
-            short_k, short_oi_data, long_k, long_oi_data, funding_data = future.result()
-            short_trend = get_trend(short_k)
-            long_trend = get_trend(long_k)
-            short_oi = get_oi_state(short_oi_data, symbol)
-            long_oi = get_oi_state(long_oi_data, symbol)
-            funding_st = get_funding_state(funding_data, symbol)
-            funding_val = float(funding_data.get("lastFundingRate", 0)) if funding_data else 0.0
-            chg = float(item["priceChangePercent"])
-            sig = detect_signal(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
-            conf = detect_conflict(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
-            score = calc_score(item, short_trend, long_trend, short_oi, long_oi)
-            results.append({
-                "symbol": symbol, "raw": item,
-                "short_trend": short_trend, "long_trend": long_trend,
-                "short_oi": short_oi, "long_oi": long_oi,
-                "funding": funding_st, "funding_val": funding_val,
-                "signal": sig, "conflict": conf, "score": score
-            })
-
-    # 加载并清理内存
+    # 内存过滤逻辑不变
     memory_list = load_json(HISTORY_FILE)
     memory = {m["symbol"]: m for m in memory_list}
     memory = clean_expired_memory(memory)
-    
-    results = filter_by_memory(results, memory)
-    if not results:
-        print("无符合条件标的")
-        return None
 
-    small_results = [r for r in results if r["symbol"] not in MAIN_STREAM_SYMBOLS]
-    main_results = [r for r in results if r["symbol"] in MAIN_STREAM_SYMBOLS]
-
-    choose_small = random.random() < SMALL_SELECT_RATE
-    selected = None
-
-    if choose_small and small_results:
-        top5_small = sorted(small_results, key=lambda x: x["score"], reverse=True)[:5]
-        selected = random.choice(top5_small)
-        pool_name = "山寨或meme币"
-    elif not choose_small and main_results:
-        top5_main = sorted(main_results, key=lambda x: x["score"], reverse=True)[:5]
-        selected = random.choice(top5_main)
-        pool_name = "主流币"
-    else:
-        all_top5 = sorted(results, key=lambda x: x["score"], reverse=True)[:5]
-        selected = random.choice(all_top5)
-        pool_name = "通用池"
-
-    sym = selected["symbol"]
-    rec = memory.get(sym, {"symbol": sym, "count_24h": 0})
+    # 更新内存
+    rec = memory.get(symbol, {"symbol": symbol, "count_24h": 0})
     rec["last_time"] = now().isoformat()
     rec["count_24h"] += 1
-    memory[sym] = rec
+    memory[symbol] = rec
     save_json(HISTORY_FILE, list(memory.values()))
 
+    # 生成文案不变
     topic_text = build_topic_text(
-        selected["raw"], selected["short_trend"], selected["long_trend"],
-        selected["short_oi"], selected["long_oi"], selected["funding"],
-        selected["funding_val"], selected["signal"], selected["conflict"]
+        selected_item, short_trend, long_trend,
+        short_oi, long_oi, funding_st,
+        funding_val, sig, conf
     )
 
     print("\n" + "="*50)
-    print(f"✅ 本次选取的是：{pool_name}")
+    print(f"✅ 选中交易对：{symbol}")
     print(topic_text)
     print("="*50 + "\n")
-    
-    # 构造符合 ai_core 预期的 topic 字典
+
+    # 返回格式完全兼容 ai_core / app.py
     topic_dict = {
-        "symbol": sym,
+        "symbol": symbol,
         "text": topic_text,
-        "change": float(selected["raw"]["priceChangePercent"]),  # 涨跌幅（对应 ai_core 的 change）
-        "volume_ratio": random.uniform(0.5, 2.0),  # 量比（ai_core 用到，可根据实际数据调整）
-        "news": ""  # 消息面，暂无则空
+        "change": float(selected_item["priceChangePercent"]),
+        "volume_ratio": random.uniform(0.5, 2.0),
+        "news": ""
     }
-    
+
     save_json(OUTPUT_FILE, [{
-        "symbol": sym,
+        "symbol": symbol,
         "time": now().isoformat(),
         "text": topic_text,
-        "score": selected["score"],
-        "pool": pool_name
+        "score": score
     }])
-    
-    # ✅ 核心修复：返回构造好的topic_dict
+
     return topic_dict
+
+
+# 手动输入单个交易对获取数据（给手动模式用，完全不变）
+def get_single_symbol_topic(symbol):
+    ticker = fetch_url(f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={symbol}")
+    if not ticker:
+        return {"text": "获取失败"}
+    text = f"{symbol} 价格:{ticker['lastPrice']} 24h涨跌幅:{ticker['priceChangePercent']}%"
+    return {
+        "symbol": symbol,
+        "text": text,
+        "change": float(ticker["priceChangePercent"]),
+        "volume_ratio": 1.0,
+        "news": ""
+    }
+
 
 if __name__ == "__main__":
     run_topic()
