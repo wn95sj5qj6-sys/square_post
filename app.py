@@ -96,6 +96,7 @@ def auto_publisher():
 
         try:
             from topic_main import run_topic
+            # 调用你完整的topic_main逻辑（前20→随机1个→完整分析）
             topic = run_topic()
             if not topic:
                 time.sleep(10)
@@ -132,11 +133,14 @@ def auto_publisher():
             save_config(cfg)
             time.sleep(AUTO_INTERVAL_MINUTES * 60)
         except Exception as e:
+            # 打印异常便于排查
+            print(f"自动发文异常：{str(e)}")
             time.sleep(10)
 
+# 启动后台线程
 threading.Thread(target=auto_publisher, daemon=True).start()
 
-# ------------------------------ 页面 ------------------------------
+# ------------------------------ 页面（修复UI+新增按钮） ------------------------------
 HOME_PAGE = """
 <!DOCTYPE html>
 <meta charset="utf-8">
@@ -154,28 +158,34 @@ HOME_PAGE = """
     button{background:#007aff;color:white;border:none;font-weight:bold}
     .tab{display:flex;gap:10px;margin-bottom:16px}
     .tab button{flex:1;background:#f2f2f7;color:#007aff}
+    .tab button.active{background:#007aff;color:white}
     .section{display:none}
     .section.active{display:block}
     #log{background:#f9f9f9;padding:16px;border-radius:12px;min-height:220px;white-space:pre-wrap}
+    .status-running{color:#00cc00;font-weight:bold}
+    .status-stopped{color:#ff3333;font-weight:bold}
+    .btn-secondary{background:#f2f2f7;color:#007aff;margin-top:8px}
 </style>
 
 <div class="box">
     <div class="card">
         <div class="title"><i class="fa fa-robot"></i> 发文助手</div>
         <div class="tab">
-            <button onclick="tab('auto')">自动模式</button>
+            <button onclick="tab('auto')" class="active">自动模式</button>
             <button onclick="tab('manual')">手动模式</button>
             <button onclick="tab('records')">记录</button>
         </div>
 
+        <!-- 自动模式（修复状态显示） -->
         <div id="auto" class="section active">
             <div class="label">自动状态</div>
-            <input id="auto_stat" readonly>
+            <input id="auto_stat" readonly style="font-weight:bold">
             <button onclick="toggleAuto()">启动/停止</button>
             <div class="label">间隔：{{interval}}分钟 | 日上限：{{limit}}</div>
             <div class="label">今日自动已发：{{today}}条</div>
         </div>
 
+        <!-- 手动模式（新增自动选交易对按钮 + 完整逻辑） -->
         <div id="manual" class="section">
             <div class="label">选择账号</div>
             <select id="m_acc">
@@ -183,15 +193,21 @@ HOME_PAGE = """
                 <option value="{{a.key}}">{{a.name}}</option>
                 {% endfor %}
             </select>
-            <div class="label">交易对（手动输入）</div>
-            <input id="m_sym" placeholder="如 BTCUSDT">
-            <button onclick="getTopic()">生成话题</button>
+            
+            <div class="label">交易对</div>
+            <input id="m_sym" placeholder="如 BTCUSDT（手动输入）">
+            <!-- 新增：自动选交易对按钮 -->
+            <button class="btn-secondary" onclick="autoSelectSymbol()">📌 自动选交易对（系统推荐）</button>
+            <button onclick="getTopic()">🔄 生成完整话题（跑全量分析）</button>
+            
             <div class="label">话题（可编辑）</div>
-            <textarea id="m_topic" rows="4"></textarea>
-            <button onclick="genAI()">生成发文内容</button>
+            <textarea id="m_topic" rows="8" placeholder="点击上方按钮生成完整分析..."></textarea>
+            
+            <button onclick="genAI()">✍️ 生成发文内容</button>
             <div class="label">最终内容（可编辑）</div>
-            <textarea id="m_content" rows="6"></textarea>
-            <button onclick="doPost()">确认发文</button>
+            <textarea id="m_content" rows="8"></textarea>
+            
+            <button onclick="doPost()">✅ 确认发文</button>
             <div id="log">等待操作...</div>
         </div>
 
@@ -214,37 +230,96 @@ HOME_PAGE = """
 <script>
     let current_tab = "auto";
     function tab(t){
+        // 重置tab样式
+        document.querySelectorAll(".tab button").forEach(b=>b.classList.remove("active"));
+        document.querySelector(`.tab button[onclick="tab('${t}')"]`).classList.add("active");
+        // 切换内容
         document.querySelectorAll(".section").forEach(s=>s.classList.remove("active"));
         document.getElementById(t).classList.add("active");
         current_tab = t;
+        // 刷新自动状态
+        if(t === "auto") refreshAutoStatus();
     }
 
+    // 修复：实时刷新自动状态
+    async function refreshAutoStatus(){
+        let res = await fetch("/api/get_auto_status");
+        let status = await res.json();
+        let statInput = document.getElementById("auto_stat");
+        if(status.running){
+            statInput.value = "✅ 运行中";
+            statInput.style.color = "#00cc00";
+        }else{
+            statInput.value = "❌ 已停止";
+            statInput.style.color = "#ff3333";
+        }
+    }
+
+    // 修复：切换自动状态
     async function toggleAuto(){
         await fetch("/api/toggle_auto");
-        location.reload();
+        refreshAutoStatus(); // 立即刷新状态
     }
 
+    // 新增：自动选交易对（调用topic_main的run_topic逻辑）
+    async function autoSelectSymbol(){
+        document.getElementById("log").textContent = "正在自动筛选交易对...";
+        let res = await fetch("/api/auto_select_symbol");
+        let data = await res.json();
+        if(data.success){
+            document.getElementById("m_sym").value = data.symbol;
+            document.getElementById("log").textContent = "✅ 自动选中：" + data.symbol;
+        }else{
+            document.getElementById("log").textContent = "❌ 筛选失败：" + data.msg;
+        }
+    }
+
+    // 修复：生成完整话题（跑topic_main全量逻辑）
     async function getTopic(){
-        let sym = document.getElementById("m_sym").value;
-        let r = await fetch("/api/manual_topic?sym="+sym);
-        let t = await r.text();
-        document.getElementById("m_topic").value = t;
+        let sym = document.getElementById("m_sym").value.trim().toUpperCase();
+        if(!sym){
+            document.getElementById("log").textContent = "❌ 请先输入/选择交易对";
+            return;
+        }
+        document.getElementById("log").textContent = "正在生成完整分析...";
+        let res = await fetch("/api/manual_topic_full?sym="+sym);
+        let data = await res.json();
+        if(data.success){
+            document.getElementById("m_topic").value = data.topic;
+            document.getElementById("log").textContent = "✅ 完整话题生成成功！";
+        }else{
+            document.getElementById("m_topic").value = "";
+            document.getElementById("log").textContent = "❌ 生成失败：" + data.msg;
+        }
     }
 
+    // 生成AI内容
     async function genAI(){
         let topic = document.getElementById("m_topic").value;
-        let r = await fetch("/api/manual_ai", {
+        if(!topic){
+            document.getElementById("log").textContent = "❌ 请先生成话题";
+            return;
+        }
+        document.getElementById("log").textContent = "AI正在创作中...";
+        let res = await fetch("/api/manual_ai", {
             method:"POST",
             headers:{"Content-Type":"application/json"},
             body:JSON.stringify({topic:topic})
         });
-        let c = await r.text();
-        document.getElementById("m_content").value = c;
+        let c = await res.text();
+        document.getElementById("m_content").value = c || "生成失败";
+        document.getElementById("log").textContent = "✅ AI创作完成！";
     }
 
+    // 确认发文
     async function doPost(){
         let key = document.getElementById("m_acc").value;
         let content = document.getElementById("m_content").value;
+        if(!key || !content){
+            document.getElementById("log").textContent = "❌ 参数缺失";
+            return;
+        }
+        document.getElementById("log").textContent = "正在发文...";
         let res = await fetch("/api/manual_post", {
             method:"POST",
             headers:{"Content-Type":"application/json"},
@@ -252,8 +327,11 @@ HOME_PAGE = """
         });
         let log = await res.text();
         document.getElementById("log").textContent = log;
+        // 保存日志到本地
+        localStorage.setItem("last_log", log);
     }
 
+    // 加载记录
     async function loadRecords(){
         let acc = document.getElementById("r_acc").value;
         let date = document.getElementById("r_date").value;
@@ -267,18 +345,24 @@ HOME_PAGE = """
         document.getElementById("r_list").innerHTML = html || "暂无记录";
     }
 
+    // 导出CSV
     function exportCSV(){
         window.open("/api/export");
     }
 
+    // 页面加载时初始化
     window.onload = function(){
+        refreshAutoStatus(); // 初始化自动状态
         let log = localStorage.getItem("last_log");
         if(log) document.getElementById("log").textContent = log;
+        // 默认选中今天日期
+        let today = new Date().toISOString().split("T")[0];
+        document.getElementById("r_date").value = today;
     }
 </script>
 """
 
-# ------------------------------ 接口 ------------------------------
+# ------------------------------ 接口（新增+修复） ------------------------------
 @app.route('/')
 def index():
     accounts = get_accounts()
@@ -288,26 +372,88 @@ def index():
         accounts=accounts,
         interval=AUTO_INTERVAL_MINUTES,
         limit=DAILY_MAX_LIMIT,
-        today=cfg.get("today_count", 0),
-        auto_stat="运行中" if cfg.get("auto_running") else "已停止"
+        today=cfg.get("today_count", 0)
     )
 
+# 新增：获取自动状态接口
+@app.route('/api/get_auto_status')
+def get_auto_status():
+    cfg = load_config()
+    return jsonify({
+        "running": cfg.get("auto_running", False),
+        "today_count": cfg.get("today_count", 0)
+    })
+
+# 修复：切换自动状态接口
 @app.route('/api/toggle_auto')
 def toggle_auto():
     cfg = load_config()
-    cfg["auto_running"] = not cfg.get("auto_running")
+    cfg["auto_running"] = not cfg.get("auto_running", False)
     save_config(cfg)
-    return "ok"
+    return jsonify({"success": True, "running": cfg["auto_running"]})
 
-@app.route('/api/manual_topic')
-def manual_topic():
-    from topic_main import get_single_symbol_topic
-    sym = request.args.get("sym", "").strip()
-    if not sym:
-        return "请输入交易对"
-    topic = get_single_symbol_topic(sym)
-    return topic.get("text", "获取失败")
+# 新增：自动选交易对接口（复用topic_main的run_topic）
+@app.route('/api/auto_select_symbol')
+def auto_select_symbol():
+    try:
+        from topic_main import run_topic
+        topic = run_topic()
+        if not topic:
+            return jsonify({"success": False, "msg": "未筛选到合适交易对"})
+        return jsonify({
+            "success": True,
+            "symbol": topic.get("symbol", ""),
+            "preview": topic.get("text", "")[:100] + "..."
+        })
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
 
+# 修复：手动模式生成完整话题（跑全量逻辑）
+@app.route('/api/manual_topic_full')
+def manual_topic_full():
+    try:
+        from topic_main import fetch_url, fetch_all_for_symbol, get_trend, get_oi_state
+        from topic_main import get_funding_state, detect_signal, detect_conflict, build_topic_text
+        
+        sym = request.args.get("sym", "").strip().upper()
+        if not sym:
+            return jsonify({"success": False, "msg": "交易对不能为空"})
+        
+        # 1. 获取基础行情
+        ticker = fetch_url(f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={sym}")
+        if not ticker:
+            return jsonify({"success": False, "msg": "获取基础行情失败"})
+        
+        # 2. 调用你完整的深度数据抓取逻辑
+        short_k, short_oi_data, long_k, long_oi_data, funding_data = fetch_all_for_symbol(sym)
+        
+        # 3. 跑你所有的分析逻辑
+        short_trend = get_trend(short_k)
+        long_trend = get_trend(long_k)
+        short_oi = get_oi_state(short_oi_data, sym)
+        long_oi = get_oi_state(long_oi_data, sym)
+        funding_st = get_funding_state(funding_data, sym)
+        funding_val = float(funding_data.get("lastFundingRate", 0)) if funding_data else 0.0
+        chg = float(ticker["priceChangePercent"])
+        sig = detect_signal(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
+        conf = detect_conflict(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
+        
+        # 4. 生成完整文案（和自动模式一模一样）
+        topic_text = build_topic_text(
+            ticker, short_trend, long_trend,
+            short_oi, long_oi, funding_st,
+            funding_val, sig, conf
+        )
+        
+        return jsonify({
+            "success": True,
+            "topic": topic_text,
+            "symbol": sym
+        })
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
+
+# 原有AI生成接口（不变）
 @app.route('/api/manual_ai', methods=['POST'])
 def manual_ai():
     data = request.json
@@ -319,6 +465,7 @@ def manual_ai():
     content, _ = generate_content(fake_topic, ZHIPU_API_KEY)
     return content or "生成失败"
 
+# 原有手动发文接口（不变）
 @app.route('/api/manual_post', methods=['POST'])
 def manual_post():
     data = request.json
@@ -342,6 +489,7 @@ def manual_post():
     save_db(record)
     return f"✅ 发文成功！ID：{post_id}" if ok else f"❌ 失败：{msg}"
 
+# 原有记录查询接口（不变）
 @app.route('/api/records')
 def api_records():
     acc = request.args.get("acc", "")
@@ -350,6 +498,7 @@ def api_records():
     out = [r for r in db if r.get("account")==acc and r.get("date")==date]
     return jsonify(out)
 
+# 原有导出接口（不变）
 @app.route('/api/export')
 def export_csv():
     db = load_db()
