@@ -5,7 +5,9 @@ import datetime
 import threading
 import time
 import copy
-import urllib.parse  # 新增：处理文件名编码
+import urllib.parse
+import csv
+from io import StringIO
 
 app = Flask(__name__)
 
@@ -19,14 +21,16 @@ DATA_DIR = "data"
 DB_FILE = f"{DATA_DIR}/records.json"
 CONFIG_FILE = f"{DATA_DIR}/config.json"
 PROMPT_FILE = f"{DATA_DIR}/prompts.json"
+BACKUP_DIR = f"{DATA_DIR}/backups"
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(BACKUP_DIR, exist_ok=True)
 
 # 多账号运行状态存储（内存中，key: 账号名，value: 是否运行）
 account_running_status = {}
 # 线程锁，保证多线程安全
 status_lock = threading.Lock()
 
-# ======================== 工具函数 ========================
+# ======================== 工具函数（新增本地导入/备份） ========================
 def load_json(file_path, default=None):
     if default is None:
         default = {}
@@ -37,10 +41,81 @@ def load_json(file_path, default=None):
         return default
 
 def save_json(file_path, data):
+    # 备份原有文件
+    if os.path.exists(file_path):
+        backup_name = f"{os.path.basename(file_path)}.backup.{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+        backup_path = os.path.join(BACKUP_DIR, backup_name)
+        with open(file_path, "r", encoding="utf-8") as f:
+            with open(backup_path, "w", encoding="utf-8") as bf:
+                bf.write(f.read())
+    # 保存新数据
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ======================== 账号管理 ========================
+def backup_current_data():
+    """备份当前所有数据文件"""
+    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    for file_path in [DB_FILE, CONFIG_FILE, PROMPT_FILE]:
+        if os.path.exists(file_path):
+            backup_path = os.path.join(BACKUP_DIR, f"{os.path.basename(file_path)}.{timestamp}")
+            with open(file_path, "r", encoding="utf-8") as f:
+                with open(backup_path, "w", encoding="utf-8") as bf:
+                    bf.write(f.read())
+    return timestamp
+
+def import_json_file(file_stream, target_file, overwrite=True):
+    """导入JSON文件到指定路径"""
+    try:
+        data = json.load(file_stream)
+        if not overwrite:
+            # 合并模式（仅新增，不覆盖原有）
+            original_data = load_json(target_file)
+            if isinstance(original_data, dict) and isinstance(data, dict):
+                original_data.update(data)
+                data = original_data
+            elif isinstance(original_data, list) and isinstance(data, list):
+                data = original_data + data
+        save_json(target_file, data)
+        return True, f"导入成功（{os.path.basename(target_file)}）"
+    except Exception as e:
+        return False, f"JSON导入失败：{str(e)}"
+
+def import_csv_records(file_stream, overwrite=True):
+    """导入CSV格式的发文记录"""
+    try:
+        csv_reader = csv.DictReader(file_stream)
+        required_fields = ["mode", "account", "date", "time", "symbol", "content", "post_id", "status"]
+        # 校验字段
+        for field in required_fields:
+            if field not in csv_reader.fieldnames:
+                return False, f"CSV缺少必要字段：{field}"
+        
+        new_records = []
+        for row in csv_reader:
+            record = {
+                "mode": row.get("mode", ""),
+                "account": row.get("account", ""),
+                "date": row.get("date", ""),
+                "time": row.get("time", ""),
+                "symbol": row.get("symbol", ""),
+                "content": row.get("content", ""),
+                "post_id": row.get("post_id", ""),
+                "status": row.get("status", "success")
+            }
+            new_records.append(record)
+        
+        # 处理覆盖/合并
+        if overwrite:
+            save_json(DB_FILE, new_records)
+        else:
+            original_records = load_json(DB_FILE, [])
+            save_json(DB_FILE, original_records + new_records)
+        
+        return True, f"导入成功，新增 {len(new_records)} 条记录"
+    except Exception as e:
+        return False, f"CSV导入失败：{str(e)}"
+
+# ======================== 账号管理（原有逻辑不变） ========================
 def get_accounts_from_env():
     accounts_env = os.getenv("BINANCE_ACCOUNTS", "").strip()
     accounts = []
@@ -103,7 +178,7 @@ def save_account_prompt(account_name, prompt, daily_limit, auto_interval):
     }
     save_json(PROMPT_FILE, prompts)
 
-# ======================== 发文记录管理（增强版） ========================
+# ======================== 发文记录管理（原有逻辑不变） ========================
 def save_post_record(mode, account_name, symbol, content, post_id, status="success"):
     record = {
         "mode": mode,
@@ -117,7 +192,7 @@ def save_post_record(mode, account_name, symbol, content, post_id, status="succe
     }
     db = load_json(DB_FILE, [])
     db.append(record)
-    # 新增：限制记录总数，防止文件过大（默认保留最近1000条）
+    # 限制记录总数，防止文件过大（默认保留最近1000条）
     MAX_RECORDS = 1000
     if len(db) > MAX_RECORDS:
         db = db[-MAX_RECORDS:]  # 只保留最后1000条
@@ -156,7 +231,6 @@ def get_today_stats(account_name=None):
     
     return stats
 
-# 新增：删除记录功能
 def delete_records(account=None, date=None, all_records=False):
     db = load_json(DB_FILE, [])
     if all_records:
@@ -177,7 +251,7 @@ def delete_records(account=None, date=None, all_records=False):
     save_json(DB_FILE, new_db)
     return len(db) - len(new_db)  # 返回删除的记录数
 
-# ======================== 多账号自动发文核心逻辑 ========================
+# ======================== 多账号自动发文核心逻辑（原有逻辑不变） ========================
 def auto_publisher_worker(account_name):
     """单个账号的自动发文线程"""
     while True:
@@ -267,7 +341,7 @@ def stop_account_auto_publish(account_name):
         account_running_status[account_name] = False
     return True
 
-# ======================== 全新UI模板（含下拉账号选择+删除功能） ========================
+# ======================== 全新UI模板（新增导入/备份功能） ========================
 UI_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -341,6 +415,7 @@ UI_TEMPLATE = """
             margin-bottom: 20px;
             border-bottom: 1px solid var(--border);
             padding-bottom: 8px;
+            flex-wrap: wrap;
         }
         
         .tab-btn {
@@ -430,6 +505,11 @@ UI_TEMPLATE = """
         
         .btn-danger {
             background: var(--danger);
+            color: white;
+        }
+        
+        .btn-warning {
+            background: var(--warning);
             color: white;
         }
         
@@ -563,6 +643,34 @@ UI_TEMPLATE = """
             border-top: 1px solid var(--border);
         }
         
+        /* 新增：导入/备份样式 */
+        .import-section {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+        }
+        
+        .import-options {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        
+        .import-option {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        input[type="file"] {
+            padding: 8px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            width: 100%;
+            margin-bottom: 8px;
+        }
+        
         @media (max-width: 480px) {
             .card {
                 padding: 16px;
@@ -580,7 +688,7 @@ UI_TEMPLATE = """
         <div class="card">
             <div class="header">
                 <h1>币安自动发文助手</h1>
-                <span class="badge">v2.2</span>
+                <span class="badge">v2.3</span>
             </div>
             
             <div class="tabs">
@@ -595,6 +703,9 @@ UI_TEMPLATE = """
                 </button>
                 <button class="tab-btn" onclick="switchTab('records')">
                     <i class="fa fa-history"></i> 发文记录
+                </button>
+                <button class="tab-btn" onclick="switchTab('backup')">
+                    <i class="fa fa-database"></i> 数据备份/导入
                 </button>
             </div>
             
@@ -787,6 +898,67 @@ UI_TEMPLATE = """
                     </div>
                 </div>
             </div>
+            
+            <!-- 新增：数据备份/导入标签页 -->
+            <div id="backup" class="tab-content">
+                <div class="form-label">数据备份</div>
+                <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+                    <button class="btn btn-warning" onclick="backupAllData()">
+                        <i class="fa fa-copy"></i> 备份当前所有数据
+                    </button>
+                    <button class="btn btn-secondary" onclick="downloadBackup('records')">
+                        <i class="fa fa-download"></i> 下载记录备份
+                    </button>
+                    <button class="btn btn-secondary" onclick="downloadBackup('config')">
+                        <i class="fa fa-download"></i> 下载配置备份
+                    </button>
+                </div>
+                
+                <div class="import-section">
+                    <div class="form-label">数据导入</div>
+                    <div class="import-options">
+                        <div class="import-option">
+                            <input type="radio" id="import_mode_cover" name="import_mode" value="cover" checked>
+                            <label for="import_mode_cover">覆盖原有数据</label>
+                        </div>
+                        <div class="import-option">
+                            <input type="radio" id="import_mode_merge" name="import_mode" value="merge">
+                            <label for="import_mode_merge">合并到原有数据</label>
+                        </div>
+                    </div>
+                    
+                    <!-- 导入发文记录 -->
+                    <div class="form-group">
+                        <label class="form-label">导入发文记录（JSON/CSV格式）</label>
+                        <input type="file" id="import_records_file" accept=".json,.csv">
+                        <button class="btn btn-primary" onclick="importRecords()">
+                            <i class="fa fa-upload"></i> 导入记录
+                        </button>
+                    </div>
+                    
+                    <!-- 导入账号配置 -->
+                    <div class="form-group">
+                        <label class="form-label">导入账号配置（仅JSON格式）</label>
+                        <input type="file" id="import_prompts_file" accept=".json">
+                        <button class="btn btn-primary" onclick="importPrompts()">
+                            <i class="fa fa-upload"></i> 导入配置
+                        </button>
+                    </div>
+                    
+                    <!-- 导入系统配置 -->
+                    <div class="form-group">
+                        <label class="form-label">导入系统配置（仅JSON格式）</label>
+                        <input type="file" id="import_config_file" accept=".json">
+                        <button class="btn btn-primary" onclick="importConfig()">
+                            <i class="fa fa-upload"></i> 导入系统配置
+                        </button>
+                    </div>
+                    
+                    <div class="log-box" id="backup_log" style="margin-top: 16px;">
+                        备份/导入操作日志将显示在这里...
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -801,6 +973,7 @@ UI_TEMPLATE = """
             
             if (tabId === 'auto') refreshAutoPage();
             if (tabId === 'config') loadAccountConfig();
+            if (tabId === 'backup') document.getElementById('backup_log').textContent = '备份/导入操作日志将显示在这里...';
         }
         
         // ======================== 自动模式 - 下拉式账号操作 ========================
@@ -1223,6 +1396,131 @@ UI_TEMPLATE = """
             });
         }
         
+        // ======================== 新增：备份/导入功能 ========================
+        function backupAllData() {
+            const logEl = document.getElementById('backup_log');
+            logEl.textContent = '正在备份所有数据，请稍候...';
+            
+            fetch('/api/backup/all', { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        logEl.textContent = `✅ 备份成功！备份时间戳：${data.timestamp}`;
+                    } else {
+                        logEl.textContent = `❌ 备份失败：${data.msg}`;
+                    }
+                });
+        }
+        
+        function downloadBackup(type) {
+            let url = '';
+            if (type === 'records') {
+                url = '/api/backup/download/records';
+            } else if (type === 'config') {
+                url = '/api/backup/download/config';
+            }
+            window.open(url);
+        }
+        
+        function getImportMode() {
+            return document.querySelector('input[name="import_mode"]:checked').value === 'cover';
+        }
+        
+        function importRecords() {
+            const fileInput = document.getElementById('import_records_file');
+            const logEl = document.getElementById('backup_log');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                logEl.textContent = '❌ 请选择要导入的文件';
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('overwrite', getImportMode());
+            
+            logEl.textContent = '正在导入记录，请稍候...';
+            
+            fetch('/api/import/records', {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    logEl.textContent = `✅ ${data.msg}`;
+                    fileInput.value = '';
+                    refreshAutoPage();
+                } else {
+                    logEl.textContent = `❌ ${data.msg}`;
+                }
+            });
+        }
+        
+        function importPrompts() {
+            const fileInput = document.getElementById('import_prompts_file');
+            const logEl = document.getElementById('backup_log');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                logEl.textContent = '❌ 请选择要导入的文件';
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('overwrite', getImportMode());
+            
+            logEl.textContent = '正在导入配置，请稍候...';
+            
+            fetch('/api/import/prompts', {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    logEl.textContent = `✅ ${data.msg}`;
+                    fileInput.value = '';
+                    refreshAutoPage();
+                } else {
+                    logEl.textContent = `❌ ${data.msg}`;
+                }
+            });
+        }
+        
+        function importConfig() {
+            const fileInput = document.getElementById('import_config_file');
+            const logEl = document.getElementById('backup_log');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                logEl.textContent = '❌ 请选择要导入的文件';
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('overwrite', getImportMode());
+            
+            logEl.textContent = '正在导入系统配置，请稍候...';
+            
+            fetch('/api/import/config', {
+                method: 'POST',
+                body: formData
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    logEl.textContent = `✅ ${data.msg}`;
+                    fileInput.value = '';
+                } else {
+                    logEl.textContent = `❌ ${data.msg}`;
+                }
+            });
+        }
+        
         // 页面加载初始化
         window.onload = function() {
             refreshAutoPage();
@@ -1235,7 +1533,7 @@ UI_TEMPLATE = """
 </html>
 """
 
-# ======================== 接口修复&新增 ========================
+# ======================== 接口修复&新增（新增备份/导入接口） ========================
 @app.route('/')
 def index():
     accounts = get_all_accounts()
@@ -1249,7 +1547,7 @@ def index():
         today=today
     )
 
-# 多账号启停接口
+# 多账号启停接口（原有）
 @app.route('/api/auto/start')
 def auto_start():
     account_name = request.args.get("account", "")
@@ -1523,6 +1821,103 @@ def delete_records_api():
         return jsonify({"success": True, "deleted_count": deleted_count})
     except Exception as e:
         return jsonify({"success": False, "msg": str(e), "deleted_count": 0})
+
+# ======================== 新增：备份/导入接口 ========================
+@app.route('/api/backup/all', methods=['POST'])
+def backup_all():
+    try:
+        timestamp = backup_current_data()
+        return jsonify({"success": True, "timestamp": timestamp, "msg": "所有数据备份成功"})
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
+
+@app.route('/api/backup/download/records')
+def download_records_backup():
+    try:
+        data = load_json(DB_FILE, [])
+        json_str = json.dumps(data, ensure_ascii=False, indent=2)
+        filename = f"records_backup_{datetime.date.today()}.json"
+        encoded_filename = urllib.parse.quote(filename)
+        
+        response = make_response(json_str)
+        response.headers["Content-Type"] = "application/json; charset=utf-8"
+        response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
+        return response
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
+
+@app.route('/api/backup/download/config')
+def download_config_backup():
+    try:
+        # 合并prompts和config为一个备份文件
+        backup_data = {
+            "prompts": load_json(PROMPT_FILE),
+            "system_config": load_json(CONFIG_FILE)
+        }
+        json_str = json.dumps(backup_data, ensure_ascii=False, indent=2)
+        filename = f"config_backup_{datetime.date.today()}.json"
+        encoded_filename = urllib.parse.quote(filename)
+        
+        response = make_response(json_str)
+        response.headers["Content-Type"] = "application/json; charset=utf-8"
+        response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
+        return response
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
+
+@app.route('/api/import/records', methods=['POST'])
+def import_records_api():
+    try:
+        if 'file' not in request.files:
+            return jsonify({"success": False, "msg": "未上传文件"})
+        
+        file = request.files['file']
+        overwrite = request.form.get('overwrite', 'true').lower() == 'true'
+        
+        if file.filename.endswith('.json'):
+            success, msg = import_json_file(file.stream, DB_FILE, overwrite)
+        elif file.filename.endswith('.csv'):
+            success, msg = import_csv_records(file.stream, overwrite)
+        else:
+            return jsonify({"success": False, "msg": "仅支持JSON/CSV格式"})
+        
+        return jsonify({"success": success, "msg": msg})
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
+
+@app.route('/api/import/prompts', methods=['POST'])
+def import_prompts_api():
+    try:
+        if 'file' not in request.files:
+            return jsonify({"success": False, "msg": "未上传文件"})
+        
+        file = request.files['file']
+        overwrite = request.form.get('overwrite', 'true').lower() == 'true'
+        
+        if not file.filename.endswith('.json'):
+            return jsonify({"success": False, "msg": "仅支持JSON格式"})
+        
+        success, msg = import_json_file(file.stream, PROMPT_FILE, overwrite)
+        return jsonify({"success": success, "msg": msg})
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
+
+@app.route('/api/import/config', methods=['POST'])
+def import_config_api():
+    try:
+        if 'file' not in request.files:
+            return jsonify({"success": False, "msg": "未上传文件"})
+        
+        file = request.files['file']
+        overwrite = request.form.get('overwrite', 'true').lower() == 'true'
+        
+        if not file.filename.endswith('.json'):
+            return jsonify({"success": False, "msg": "仅支持JSON格式"})
+        
+        success, msg = import_json_file(file.stream, CONFIG_FILE, overwrite)
+        return jsonify({"success": success, "msg": msg})
+    except Exception as e:
+        return jsonify({"success": False, "msg": str(e)})
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000, debug=False)
