@@ -341,7 +341,7 @@ def stop_account_auto_publish(account_name):
         account_running_status[account_name] = False
     return True
 
-# ======================== 全新UI模板（新增导入/备份功能） ========================
+# ======================== 全新UI模板（合并发文记录和备份导入到同一个菜单） ========================
 UI_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -702,10 +702,7 @@ UI_TEMPLATE = """
                     <i class="fa fa-cog"></i> 账号配置
                 </button>
                 <button class="tab-btn" onclick="switchTab('records')">
-                    <i class="fa fa-history"></i> 发文记录
-                </button>
-                <button class="tab-btn" onclick="switchTab('backup')">
-                    <i class="fa fa-database"></i> 数据备份/导入
+                    <i class="fa fa-history"></i> 发文记录&数据管理
                 </button>
             </div>
             
@@ -850,10 +847,11 @@ UI_TEMPLATE = """
                 </div>
             </div>
             
-            <!-- 发文记录（新增删除功能） -->
+            <!-- 合并：发文记录 + 数据备份/导入 -->
             <div id="records" class="tab-content">
+                <!-- 发文记录查询&导出 -->
                 <div class="form-group">
-                    <label class="form-label">筛选条件</label>
+                    <label class="form-label">发文记录查询</label>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                         <select id="record_account" class="form-control" style="flex: 1; min-width: 120px;">
                             <option value="">所有账号</option>
@@ -875,7 +873,7 @@ UI_TEMPLATE = """
                     请点击查询按钮加载记录...
                 </div>
                 
-                <!-- 新增：删除记录功能区 -->
+                <!-- 删除记录功能区 -->
                 <div class="delete-section">
                     <div class="form-label">删除记录</div>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
@@ -897,25 +895,25 @@ UI_TEMPLATE = """
                         谨慎操作！删除后无法恢复
                     </div>
                 </div>
-            </div>
-            
-            <!-- 新增：数据备份/导入标签页 -->
-            <div id="backup" class="tab-content">
-                <div class="form-label">数据备份</div>
-                <div style="display: flex; gap: 8px; margin-bottom: 16px;">
-                    <button class="btn btn-warning" onclick="backupAllData()">
-                        <i class="fa fa-copy"></i> 备份当前所有数据
-                    </button>
-                    <button class="btn btn-secondary" onclick="downloadBackup('records')">
-                        <i class="fa fa-download"></i> 下载记录备份
-                    </button>
-                    <button class="btn btn-secondary" onclick="downloadBackup('config')">
-                        <i class="fa fa-download"></i> 下载配置备份
-                    </button>
-                </div>
                 
+                <!-- 数据备份/导入功能区 -->
                 <div class="import-section">
-                    <div class="form-label">数据导入</div>
+                    <div class="form-label">数据备份&导入</div>
+                    
+                    <!-- 备份功能 -->
+                    <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+                        <button class="btn btn-warning" onclick="backupAllData()">
+                            <i class="fa fa-copy"></i> 备份当前所有数据
+                        </button>
+                        <button class="btn btn-secondary" onclick="downloadBackup('records')">
+                            <i class="fa fa-download"></i> 下载记录备份
+                        </button>
+                        <button class="btn btn-secondary" onclick="downloadBackup('config')">
+                            <i class="fa fa-download"></i> 下载配置备份
+                        </button>
+                    </div>
+                    
+                    <!-- 导入选项 -->
                     <div class="import-options">
                         <div class="import-option">
                             <input type="radio" id="import_mode_cover" name="import_mode" value="cover" checked>
@@ -973,7 +971,10 @@ UI_TEMPLATE = """
             
             if (tabId === 'auto') refreshAutoPage();
             if (tabId === 'config') loadAccountConfig();
-            if (tabId === 'backup') document.getElementById('backup_log').textContent = '备份/导入操作日志将显示在这里...';
+            if (tabId === 'records') {
+                document.getElementById('backup_log').textContent = '备份/导入操作日志将显示在这里...';
+                document.getElementById('delete_log').textContent = '谨慎操作！删除后无法恢复';
+            }
         }
         
         // ======================== 自动模式 - 下拉式账号操作 ========================
@@ -1396,7 +1397,7 @@ UI_TEMPLATE = """
             });
         }
         
-        // ======================== 新增：备份/导入功能 ========================
+        // ======================== 备份/导入功能 ========================
         function backupAllData() {
             const logEl = document.getElementById('backup_log');
             logEl.textContent = '正在备份所有数据，请稍候...';
@@ -1452,6 +1453,7 @@ UI_TEMPLATE = """
                     logEl.textContent = `✅ ${data.msg}`;
                     fileInput.value = '';
                     refreshAutoPage();
+                    loadRecords(); // 导入后刷新记录列表
                 } else {
                     logEl.textContent = `❌ ${data.msg}`;
                 }
@@ -1533,7 +1535,7 @@ UI_TEMPLATE = """
 </html>
 """
 
-# ======================== 接口修复&新增（新增备份/导入接口） ========================
+# ======================== 接口修复&新增（原有逻辑完全不变） ========================
 @app.route('/')
 def index():
     accounts = get_all_accounts()
@@ -1822,7 +1824,7 @@ def delete_records_api():
     except Exception as e:
         return jsonify({"success": False, "msg": str(e), "deleted_count": 0})
 
-# ======================== 新增：备份/导入接口 ========================
+# ======================== 备份/导入接口（原有逻辑不变） ========================
 @app.route('/api/backup/all', methods=['POST'])
 def backup_all():
     try:
