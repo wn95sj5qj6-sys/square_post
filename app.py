@@ -1,19 +1,19 @@
 from flask import Flask, render_template_string, request, jsonify
 import threading
 import time
+
+# 只保留真实存在的导入，注释掉不存在的 TopicManager、Utils
 from post_main import PostManager
 # from topic_main import TopicManager
-from utils import Utils
+# from utils import Utils
 
 app = Flask(__name__)
 
 # ===================== 内存全局配置（网页填写，不写死密钥） =====================
 SYS_CONFIG = {
-    # 模型密钥 网页填写
     "zhipu_api_key": "",
     "deepseek_api_key": "",
-    # 当前选中
-    "current_model_type": "deepseek",  # deepseek / zhipu
+    "current_model_type": "deepseek",
     "current_model_name": "deepseek-chat",
     "temperature": 0.7,
     "max_tokens": 2048
@@ -21,10 +21,10 @@ SYS_CONFIG = {
 auto_running = False
 # =============================================================================
 
-# 初始化业务
+# 只初始化真实有的模块
 post_manager = PostManager(sys_config=SYS_CONFIG)
 # topic_manager = TopicManager()
-utils = Utils()
+# utils = Utils()
 
 # 完整前端页面：保留你原有所有UI布局，只新增【模型配置面板】，不改动原有样式
 index_html = """
