@@ -9,9 +9,13 @@ from io import StringIO
 
 app = Flask(__name__)
 
-# 全局配置（仅存服务器内存）
-BINANCE_ACCOUNTS = []  # 币安账号列表（网页配置）
-ACCOUNT_CONFIG = {}    # 每个账号的模型配置、提示词、限额、间隔
+# ========== 全局配置 ==========
+BINANCE_ACCOUNTS = []       # 币安账号列表（网页配置）
+GLOBAL_MODEL_KEYS = {       # 全局模型Key，所有账号共享
+    "zhipu": "",
+    "deepseek": ""
+}
+ACCOUNT_CONFIG = {}         # 每个账号的模型选择、提示词、限额、间隔
 AUTO_TASKS = {}
 DATA_DIR = "data"
 RECORDS_FILE = os.path.join(DATA_DIR, "records.json")
@@ -75,7 +79,7 @@ def auto_publish_task(account_name):
     acc_cfg = ACCOUNT_CONFIG.get(account_name, {})
     binance_key = next((a["key"] for a in BINANCE_ACCOUNTS if a["name"] == account_name), None)
     model_type = acc_cfg.get("model_type", "zhipu")
-    model_key = acc_cfg.get("api_key", "")
+    model_key = GLOBAL_MODEL_KEYS.get(model_type, "")
     daily_limit = acc_cfg.get("daily_limit", 8)
     interval = acc_cfg.get("auto_interval", 60)
     custom_prompt = acc_cfg.get("prompt", "")
@@ -129,7 +133,7 @@ def stop_auto_task(account_name):
     AUTO_TASKS[account_name] = False
     return True, "已停止自动发文"
 
-# ========== 前端UI（1:1还原原界面，币安账号+模型配置都有） ==========
+# ========== 前端UI（1:1还原原界面 + 全局模型Key配置） ==========
 UI_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -382,9 +386,23 @@ UI_TEMPLATE = """
             <div id="manual_log" class="form-group"></div>
         </div>
 
-        <!-- 账号配置（修复：币安账号管理+模型配置都有） -->
+        <!-- 账号配置（修复：全局模型Key + 币安账号管理） -->
         <div id="config" class="tab-content active">
-            <!-- 币安账号管理（新增/删除） -->
+            <!-- 全局模型Key配置 -->
+            <div class="form-group">
+                <label>全局DeepSeek API Key（所有账号共享）</label>
+                <input type="password" id="global_deepseek_key" placeholder="输入DeepSeek API Key，保存后隐藏为星号">
+            </div>
+            <div class="form-group">
+                <label>全局智谱GLM-4 API Key（所有账号共享）</label>
+                <input type="password" id="global_zhipu_key" placeholder="输入智谱API Key，保存后隐藏为星号">
+            </div>
+            <button class="btn btn-primary" onclick="saveGlobalKeys()">保存全局模型Key</button>
+            <div id="global_key_log" class="form-group"></div>
+
+            <hr style="margin: 30px 0;">
+
+            <!-- 币安账号管理 -->
             <div class="form-group">
                 <label>添加币安广场账号</label>
                 <div style="display: flex; gap: 12px; margin-bottom: 8px;">
@@ -407,16 +425,11 @@ UI_TEMPLATE = """
             </div>
 
             <div class="form-group">
-                <label>模型类型</label>
+                <label>模型类型（自动带入全局Key）</label>
                 <select id="config_model">
                     <option value="zhipu">智谱GLM-4</option>
                     <option value="deepseek">DeepSeek-v4-flash</option>
                 </select>
-            </div>
-
-            <div class="form-group">
-                <label>模型API Key（保存后显示为星号）</label>
-                <input type="password" id="config_api_key" placeholder="输入模型API Key">
             </div>
 
             <div class="form-group">
@@ -434,7 +447,7 @@ UI_TEMPLATE = """
                 <input type="number" id="config_interval" value="60" min="5">
             </div>
 
-            <button class="btn btn-primary" onclick="saveAccountConfig()">保存配置</button>
+            <button class="btn btn-primary" onclick="saveAccountConfig()">保存账号配置</button>
             <div id="config_log" class="form-group"></div>
         </div>
 
@@ -574,6 +587,23 @@ UI_TEMPLATE = """
             });
         }
 
+        // 账号配置 - 全局模型Key
+        function saveGlobalKeys() {
+            const deepseekKey = document.getElementById('global_deepseek_key').value;
+            const zhipuKey = document.getElementById('global_zhipu_key').value;
+            fetch('/api/global_keys/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({deepseek: deepseekKey, zhipu: zhipuKey})
+            }).then(res => res.json()).then(data => {
+                document.getElementById('global_key_log').innerText = data.msg;
+                alert('全局模型Key保存成功');
+                // 保存后显示为星号
+                if (deepseekKey) document.getElementById('global_deepseek_key').value = '********';
+                if (zhipuKey) document.getElementById('global_zhipu_key').value = '********';
+            });
+        }
+
         // 账号配置 - 币安账号管理
         function addBinanceAccount() {
             const name = document.getElementById('new_acc_name').value.trim();
@@ -602,12 +632,11 @@ UI_TEMPLATE = """
             });
         }
 
-        // 账号配置 - 模型配置
+        // 账号配置 - 账号配置
         function loadAccountConfig() {
             const account = document.getElementById('config_account').value;
             fetch(`/api/config?account=${account}`).then(res => res.json()).then(cfg => {
                 document.getElementById('config_model').value = cfg.model_type || 'zhipu';
-                document.getElementById('config_api_key').value = cfg.api_key ? '********' : '';
                 document.getElementById('config_prompt').value = cfg.prompt || '';
                 document.getElementById('config_daily_limit').value = cfg.daily_limit || 8;
                 document.getElementById('config_interval').value = cfg.auto_interval || 60;
@@ -617,23 +646,19 @@ UI_TEMPLATE = """
         function saveAccountConfig() {
             const account = document.getElementById('config_account').value;
             const model_type = document.getElementById('config_model').value;
-            const api_key = document.getElementById('config_api_key').value;
             const prompt = document.getElementById('config_prompt').value;
             const daily_limit = parseInt(document.getElementById('config_daily_limit').value);
             const auto_interval = parseInt(document.getElementById('config_interval').value);
-
-            // 不覆盖星号显示的Key
-            const real_api_key = api_key === '********' ? '' : api_key;
 
             fetch('/api/config/save', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
-                    account, model_type, api_key: real_api_key, prompt, daily_limit, auto_interval
+                    account, model_type, prompt, daily_limit, auto_interval
                 })
             }).then(res => res.json()).then(data => {
                 document.getElementById('config_log').innerText = data.msg;
-                alert('配置保存成功');
+                alert('账号配置保存成功');
             });
         }
 
@@ -692,6 +717,11 @@ UI_TEMPLATE = """
             document.getElementById('delete_date').value = new Date().toISOString().split('T')[0];
             refreshAutoStats();
             loadAccountConfig();
+            // 加载全局Key状态（仅显示是否已配置）
+            fetch('/api/global_keys').then(res => res.json()).then(keys => {
+                if (keys.deepseek) document.getElementById('global_deepseek_key').value = '********';
+                if (keys.zhipu) document.getElementById('global_zhipu_key').value = '********';
+            });
         };
     </script>
 </body>
@@ -709,6 +739,23 @@ def index():
         except:
             pass
     return render_template_string(UI_TEMPLATE, accounts=BINANCE_ACCOUNTS)
+
+# 全局模型Key接口
+@app.route('/api/global_keys')
+def get_global_keys():
+    return jsonify({
+        "deepseek": bool(GLOBAL_MODEL_KEYS["deepseek"]),
+        "zhipu": bool(GLOBAL_MODEL_KEYS["zhipu"])
+    })
+
+@app.route('/api/global_keys/save', methods=['POST'])
+def save_global_keys():
+    data = request.json
+    if data.get('deepseek'):
+        GLOBAL_MODEL_KEYS["deepseek"] = data['deepseek']
+    if data.get('zhipu'):
+        GLOBAL_MODEL_KEYS["zhipu"] = data['zhipu']
+    return jsonify({"msg": "全局模型Key保存成功"})
 
 # 币安账号管理接口
 @app.route('/api/binance/add', methods=['POST'])
@@ -773,10 +820,10 @@ def generate_api():
         return "参数错误"
     cfg = ACCOUNT_CONFIG.get(account, {})
     model_type = cfg.get('model_type', 'zhipu')
-    api_key = cfg.get('api_key', '')
+    model_key = GLOBAL_MODEL_KEYS.get(model_type, "")
     prompt = cfg.get('prompt', '')
     from ai_core import generate_post_content
-    content = generate_post_content(analysis, model_type, api_key, prompt)
+    content = generate_post_content(analysis, model_type, model_key, prompt)
     return content
 
 @app.route('/api/publish', methods=['POST'])
@@ -810,7 +857,6 @@ def get_config():
     cfg = ACCOUNT_CONFIG.get(account, {})
     return jsonify({
         "model_type": cfg.get("model_type", "zhipu"),
-        "api_key": cfg.get("api_key", ""),
         "prompt": cfg.get("prompt", ""),
         "daily_limit": cfg.get("daily_limit", 8),
         "auto_interval": cfg.get("auto_interval", 60)
@@ -822,14 +868,11 @@ def save_config():
     account = data.get('account')
     if account not in ACCOUNT_CONFIG:
         ACCOUNT_CONFIG[account] = {}
-    # 只更新非空Key
-    if data.get('api_key'):
-        ACCOUNT_CONFIG[account]['api_key'] = data['api_key']
     ACCOUNT_CONFIG[account]['model_type'] = data['model_type']
     ACCOUNT_CONFIG[account]['prompt'] = data['prompt']
     ACCOUNT_CONFIG[account]['daily_limit'] = data['daily_limit']
     ACCOUNT_CONFIG[account]['auto_interval'] = data['auto_interval']
-    return jsonify({"msg": "配置保存成功"})
+    return jsonify({"msg": "账号配置保存成功"})
 
 # 发文记录接口
 @app.route('/api/records')
