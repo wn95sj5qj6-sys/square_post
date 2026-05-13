@@ -9,19 +9,17 @@ from io import StringIO
 
 app = Flask(__name__)
 
-# ========== 全局配置 ==========
-BINANCE_ACCOUNTS = []       # 币安账号列表（网页配置）
-GLOBAL_MODEL_KEYS = {       # 全局模型Key，所有账号共享
+BINANCE_ACCOUNTS = []
+GLOBAL_MODEL_KEYS = {
     "zhipu": "",
     "deepseek": ""
 }
-ACCOUNT_CONFIG = {}         # 每个账号的模型选择、提示词、限额、间隔
+ACCOUNT_CONFIG = {}
 AUTO_TASKS = {}
 DATA_DIR = "data"
 RECORDS_FILE = os.path.join(DATA_DIR, "records.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# ========== 工具函数 ==========
 def load_json(file_path, default=None):
     if default is None:
         default = []
@@ -30,8 +28,7 @@ def load_json(file_path, default=None):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception as e:
-        print(f"加载文件失败：{e}")
+    except:
         return default
 
 def save_json(file_path, data):
@@ -74,52 +71,55 @@ def get_today_stats():
         }
     return stats
 
-# ========== 自动发文线程 ==========
 def auto_publish_task(account_name):
-    acc_cfg = ACCOUNT_CONFIG.get(account_name, {})
-    binance_key = next((a["key"] for a in BINANCE_ACCOUNTS if a["name"] == account_name), None)
-    model_type = acc_cfg.get("model_type", "zhipu")
-    model_key = GLOBAL_MODEL_KEYS.get(model_type, "")
-    daily_limit = acc_cfg.get("daily_limit", 8)
-    interval = acc_cfg.get("auto_interval", 60)
-    custom_prompt = acc_cfg.get("prompt", "")
+    try:
+        while True:
+            if not AUTO_TASKS.get(account_name, False):
+                break
 
-    while AUTO_TASKS.get(account_name, False):
-        stats = get_today_stats().get(account_name, {})
-        if stats.get("used", 0) >= daily_limit:
-            AUTO_TASKS[account_name] = False
-            break
+            acc_cfg = ACCOUNT_CONFIG.get(account_name, {})
+            binance_key = next((a["key"] for a in BINANCE_ACCOUNTS if a["name"] == account_name), None)
+            model_type = acc_cfg.get("model_type", "zhipu")
+            model_key = GLOBAL_MODEL_KEYS.get(model_type, "")
+            daily_limit = acc_cfg.get("daily_limit", 8)
+            interval = acc_cfg.get("auto_interval", 60) * 60
+            custom_prompt = acc_cfg.get("prompt", "")
 
-        # 1. 获取交易对
-        from topic_main import get_random_topic
-        topic = get_random_topic()
-        if not topic:
-            time.sleep(10)
-            continue
+            stats = get_today_stats().get(account_name, {})
+            if stats.get("used", 0) >= daily_limit:
+                AUTO_TASKS[account_name] = False
+                break
 
-        # 2. 生成发文内容
-        from ai_core import generate_post_content
-        content = generate_post_content(topic["text"], model_type, model_key, custom_prompt)
-        if "错误" in content:
-            time.sleep(10)
-            continue
+            from topic_main import get_random_topic
+            topic = get_random_topic()
+            if not topic:
+                time.sleep(10)
+                continue
 
-        # 3. 发文
-        from post_main import post_to_binance
-        success, msg, post_id = post_to_binance(content, binance_key)
-        record = {
-            "date": get_today_date(),
-            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "account": account_name,
-            "symbol": topic["symbol"],
-            "content": content,
-            "post_id": post_id,
-            "mode": "auto",
-            "status": "success" if success else "fail",
-            "msg": msg
-        }
-        save_record(record)
-        time.sleep(interval * 60)
+            from ai_core import generate_post_content
+            content = generate_post_content(topic["text"], model_type, model_key, custom_prompt)
+            if "错误" in content:
+                time.sleep(10)
+                continue
+
+            from post_main import post_to_binance
+            success, msg, post_id = post_to_binance(content, binance_key)
+            record = {
+                "date": get_today_date(),
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "account": account_name,
+                "symbol": topic["symbol"],
+                "content": content,
+                "post_id": post_id,
+                "mode": "auto",
+                "status": "success" if success else "fail",
+                "msg": msg
+            }
+            save_record(record)
+            time.sleep(interval)
+    except Exception as e:
+        print(f"自动线程异常：{e}")
+        AUTO_TASKS[account_name] = False
 
 def start_auto_task(account_name):
     if AUTO_TASKS.get(account_name, False):
@@ -133,7 +133,6 @@ def stop_auto_task(account_name):
     AUTO_TASKS[account_name] = False
     return True, "已停止自动发文"
 
-# ========== 前端UI（1:1还原原界面 + 全局模型Key配置） ==========
 UI_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -317,7 +316,7 @@ UI_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <h1>币安自动发文助手 <span class="version-badge">v2.2</span></h1>
+        <h1>币安自动发文助手 <span class="version-badge">v2.3</span></h1>
 
         <div class="tabs">
             <button class="tab-btn" onclick="switchTab('auto')">自动模式</button>
@@ -326,7 +325,6 @@ UI_TEMPLATE = """
             <button class="tab-btn" onclick="switchTab('records')">发文记录</button>
         </div>
 
-        <!-- 自动模式 -->
         <div id="auto" class="tab-content">
             <div class="form-group">
                 <label>选择账号</label>
@@ -336,19 +334,16 @@ UI_TEMPLATE = """
                     {% endfor %}
                 </select>
             </div>
-
             <div class="form-group">
                 <label>今日发文统计</label>
                 <div id="auto_stats" class="stats-grid"></div>
             </div>
-
             <div class="btn-group">
                 <button class="btn btn-success" onclick="startAuto()">启动自动发文</button>
                 <button class="btn btn-danger" onclick="stopAuto()">停止自动发文</button>
             </div>
         </div>
 
-        <!-- 手动模式 -->
         <div id="manual" class="tab-content">
             <div class="form-group">
                 <label>选择发文账号</label>
@@ -358,54 +353,46 @@ UI_TEMPLATE = """
                     {% endfor %}
                 </select>
             </div>
-
             <div class="form-group">
                 <label>交易对</label>
-                <input type="text" id="manual_symbol" placeholder="如 BTCUSDT，支持大小写">
+                <input type="text" id="manual_symbol" placeholder="如 BTCUSDT">
                 <div class="btn-group">
                     <button class="btn btn-secondary" onclick="autoSelectSymbol()">自动选交易对</button>
                     <button class="btn btn-secondary" onclick="generateAnalysis()">生成完整分析</button>
                 </div>
             </div>
-
             <div class="form-group">
-                <label>话题分析（可编辑）</label>
-                <textarea id="manual_analysis" placeholder="点击上方按钮生成完整分析内容..."></textarea>
+                <label>话题分析</label>
+                <textarea id="manual_analysis"></textarea>
             </div>
-
             <div class="form-group">
                 <button class="btn btn-secondary" onclick="generatePostContent()">生成发文内容</button>
             </div>
-
             <div class="form-group">
-                <label>最终内容（可编辑）</label>
-                <textarea id="manual_content" placeholder="AI生成的内容将显示在这里..."></textarea>
+                <label>最终内容</label>
+                <textarea id="manual_content"></textarea>
             </div>
-
             <button class="btn btn-success" onclick="publishPost()">确认发文</button>
             <div id="manual_log" class="form-group"></div>
         </div>
 
-        <!-- 账号配置（修复：全局模型Key + 币安账号管理） -->
         <div id="config" class="tab-content active">
-            <!-- 全局模型Key配置 -->
             <div class="form-group">
-                <label>全局DeepSeek API Key（所有账号共享）</label>
-                <input type="password" id="global_deepseek_key" placeholder="输入DeepSeek API Key，保存后隐藏为星号">
+                <label>全局DeepSeek API Key</label>
+                <input type="password" id="global_deepseek_key">
             </div>
             <div class="form-group">
-                <label>全局智谱GLM-4 API Key（所有账号共享）</label>
-                <input type="password" id="global_zhipu_key" placeholder="输入智谱API Key，保存后隐藏为星号">
+                <label>全局智谱GLM-4 API Key</label>
+                <input type="password" id="global_zhipu_key">
             </div>
             <button class="btn btn-primary" onclick="saveGlobalKeys()">保存全局模型Key</button>
             <div id="global_key_log" class="form-group"></div>
 
-            <hr style="margin: 30px 0;">
+            <hr style="margin:30px 0">
 
-            <!-- 币安账号管理 -->
             <div class="form-group">
                 <label>添加币安广场账号</label>
-                <div style="display: flex; gap: 12px; margin-bottom: 8px;">
+                <div style="display:flex;gap:12px;">
                     <input type="text" id="new_acc_name" placeholder="账号名称">
                     <input type="text" id="new_acc_key" placeholder="币安API Key">
                 </div>
@@ -425,302 +412,237 @@ UI_TEMPLATE = """
             </div>
 
             <div class="form-group">
-                <label>模型类型（自动带入全局Key）</label>
+                <label>模型类型</label>
                 <select id="config_model">
                     <option value="zhipu">智谱GLM-4</option>
-                    <option value="deepseek">DeepSeek-v4-flash</option>
+                    <option value="deepseek">DeepSeek</option>
                 </select>
             </div>
 
             <div class="form-group">
                 <label>专属提示词</label>
-                <textarea id="config_prompt" placeholder="该账号的专属AI提示词，留空使用默认提示词..."></textarea>
+                <textarea id="config_prompt"></textarea>
             </div>
 
             <div class="form-group">
                 <label>每日发文限额</label>
-                <input type="number" id="config_daily_limit" value="8" min="1">
+                <input type="number" id="config_daily_limit" value="8">
             </div>
 
             <div class="form-group">
                 <label>自动发文间隔（分钟）</label>
-                <input type="number" id="config_interval" value="60" min="5">
+                <input type="number" id="config_interval" value="60">
             </div>
 
             <button class="btn btn-primary" onclick="saveAccountConfig()">保存账号配置</button>
             <div id="config_log" class="form-group"></div>
         </div>
 
-        <!-- 发文记录 -->
         <div id="records" class="tab-content">
             <div class="form-group">
-                <div style="display: flex; gap: 12px; align-items: center;">
-                    <select id="record_account" style="flex: 1;">
+                <div style="display:flex;gap:12px;">
+                    <select id="record_account" style="flex:1">
                         <option value="">所有账号</option>
                         {% for acc in accounts %}
                         <option value="{{ acc.name }}">{{ acc.name }}</option>
                         {% endfor %}
                     </select>
-                    <input type="date" id="record_date" style="flex: 1;">
+                    <input type="date" id="record_date" style="flex:1">
                 </div>
                 <div class="btn-group">
                     <button class="btn btn-secondary" onclick="queryRecords()">查询</button>
                     <button class="btn btn-secondary" onclick="exportRecords()">导出</button>
                 </div>
             </div>
-
             <div id="records_list"></div>
-
-            <div class="form-group" style="margin-top: 30px;">
-                <label>删除记录</label>
-                <div style="display: flex; gap: 12px; align-items: center;">
-                    <select id="delete_account" style="flex: 1;">
-                        <option value="">所有账号</option>
-                        {% for acc in accounts %}
-                        <option value="{{ acc.name }}">{{ acc.name }}</option>
-                        {% endfor %}
-                    </select>
-                    <input type="date" id="delete_date" style="flex: 1;">
-                </div>
-                <div class="btn-group">
-                    <button class="btn btn-danger" onclick="deleteSelectedRecords()">删除选中记录</button>
-                    <button class="btn btn-danger" onclick="deleteAllRecords()">删除所有记录</button>
-                </div>
-                <p style="color: #dc3545; margin-top: 8px; font-size: 14px;">谨慎操作！删除后无法恢复</p>
-            </div>
         </div>
     </div>
 
     <script>
-        // Tab切换
         function switchTab(tab) {
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             document.querySelector(`.tab-btn[onclick="switchTab('${tab}')"]`).classList.add('active');
             document.getElementById(tab).classList.add('active');
             if (tab === 'auto') refreshAutoStats();
             if (tab === 'records') queryRecords();
         }
 
-        // 自动模式
         function refreshAutoStats() {
-            fetch('/api/stats').then(res => res.json()).then(stats => {
-                const html = Object.entries(stats).map(([name, data]) => `
+            fetch('/api/stats').then(r=>r.json()).then(s=>{
+                let html = '';
+                for(let k in s) {
+                    html += `
                     <div class="stat-card">
-                        <div class="stat-number">${data.used}</div>
-                        <div class="stat-label">${name}</div>
-                        <div class="stat-label">自动: ${data.auto_used} | 手动: ${data.manual_used}</div>
-                        <div class="stat-label">剩余: ${data.remaining}/${data.limit}</div>
-                        <span class="status-badge ${data.running ? 'status-running' : 'status-stopped'}">
-                            ${data.running ? '运行中' : '已停止'}
+                        <div class="stat-number">${s[k].used}</div>
+                        <div class="stat-label">${k}</div>
+                        <div class="stat-label">自动:${s[k].auto_used} 手动:${s[k].manual_used}</div>
+                        <div class="stat-label">剩余:${s[k].remaining}/${s[k].limit}</div>
+                        <span class="status-badge ${s[k].running?'status-running':'status-stopped'}">
+                            ${s[k].running?'运行中':'已停止'}
                         </span>
-                    </div>
-                `).join('');
+                    </div>`;
+                }
                 document.getElementById('auto_stats').innerHTML = html;
             });
         }
 
         function startAuto() {
-            const account = document.getElementById('auto_account').value;
             fetch('/api/auto/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({account})
-            }).then(res => res.json()).then(data => {
-                alert(data.msg);
-                refreshAutoStats();
-            });
+                body: JSON.stringify({account: document.getElementById('auto_account').value})
+            }).then(r=>r.json()).then(d=>{alert(d.msg);refreshAutoStats();});
         }
 
         function stopAuto() {
-            const account = document.getElementById('auto_account').value;
             fetch('/api/auto/stop', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({account})
-            }).then(res => res.json()).then(data => {
-                alert(data.msg);
-                refreshAutoStats();
-            });
+                body: JSON.stringify({account: document.getElementById('auto_account').value})
+            }).then(r=>r.json()).then(d=>{alert(d.msg);refreshAutoStats();});
         }
 
-        // 手动模式
         function autoSelectSymbol() {
-            fetch('/api/topic/random').then(res => res.json()).then(topic => {
-                document.getElementById('manual_symbol').value = topic.symbol;
-                document.getElementById('manual_analysis').value = topic.text;
+            fetch('/api/topic/random').then(r=>r.json()).then(t=>{
+                document.getElementById('manual_symbol').value = t.symbol;
+                document.getElementById('manual_analysis').value = t.text;
             });
         }
 
         function generateAnalysis() {
-            const symbol = document.getElementById('manual_symbol').value.trim().toUpperCase();
-            if (!symbol) return alert('请输入交易对或点击自动选交易对');
-            fetch(`/api/topic?symbol=${symbol}`).then(res => res.json()).then(topic => {
-                document.getElementById('manual_analysis').value = topic.text;
+            const s = document.getElementById('manual_symbol').value.trim().toUpperCase();
+            if(!s) return alert('请输入交易对');
+            fetch(`/api/topic?symbol=${s}`).then(r=>r.json()).then(t=>{
+                document.getElementById('manual_analysis').value = t.text;
             });
         }
 
         function generatePostContent() {
-            const account = document.getElementById('manual_account').value;
-            const analysis = document.getElementById('manual_analysis').value;
-            if (!analysis) return alert('请先生成话题分析');
+            const a = document.getElementById('manual_account').value;
+            const c = document.getElementById('manual_analysis').value;
             fetch('/api/generate', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({account, analysis})
-            }).then(res => res.text()).then(content => {
-                document.getElementById('manual_content').value = content;
+                body: JSON.stringify({account:a, analysis:c})
+            }).then(r=>r.text()).then(t=>{
+                document.getElementById('manual_content').value = t;
             });
         }
 
         function publishPost() {
-            const account = document.getElementById('manual_account').value;
-            const content = document.getElementById('manual_content').value;
-            if (!content) return alert('请先生成或输入发文内容');
+            const a = document.getElementById('manual_account').value;
+            const c = document.getElementById('manual_content').value;
             fetch('/api/publish', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({account, content})
-            }).then(res => res.json()).then(data => {
-                document.getElementById('manual_log').innerText = JSON.stringify(data, null, 2);
-                alert(data.msg);
+                body: JSON.stringify({account:a, content:c})
+            }).then(r=>r.json()).then(d=>{
+                alert(d.msg);
             });
         }
 
-        // 账号配置 - 全局模型Key
         function saveGlobalKeys() {
-            const deepseekKey = document.getElementById('global_deepseek_key').value;
-            const zhipuKey = document.getElementById('global_zhipu_key').value;
             fetch('/api/global_keys/save', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({deepseek: deepseekKey, zhipu: zhipuKey})
-            }).then(res => res.json()).then(data => {
-                document.getElementById('global_key_log').innerText = data.msg;
-                alert('全局模型Key保存成功');
-                // 保存后显示为星号
-                if (deepseekKey) document.getElementById('global_deepseek_key').value = '********';
-                if (zhipuKey) document.getElementById('global_zhipu_key').value = '********';
+                body: JSON.stringify({
+                    deepseek: document.getElementById('global_deepseek_key').value,
+                    zhipu: document.getElementById('global_zhipu_key').value
+                })
+            }).then(r=>r.json()).then(d=>{
+                alert('全局Key保存成功');
+                if(document.getElementById('global_deepseek_key').value)
+                    document.getElementById('global_deepseek_key').value = '********';
+                if(document.getElementById('global_zhipu_key').value)
+                    document.getElementById('global_zhipu_key').value = '********';
             });
         }
 
-        // 账号配置 - 币安账号管理
         function addBinanceAccount() {
-            const name = document.getElementById('new_acc_name').value.trim();
-            const key = document.getElementById('new_acc_key').value.trim();
-            if (!name || !key) return alert('账号名称和API Key不能为空');
+            const n = document.getElementById('new_acc_name').value.trim();
+            const k = document.getElementById('new_acc_key').value.trim();
+            if(!n||!k) return alert('名称和Key不能为空');
             fetch('/api/binance/add', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name, key})
-            }).then(res => res.json()).then(data => {
-                alert(data.msg);
+                body: JSON.stringify({name:n, key:k})
+            }).then(r=>r.json()).then(d=>{
+                alert(d.msg);
                 location.reload();
             });
         }
 
         function deleteBinanceAccount() {
-            const name = document.getElementById('config_account').value;
-            if (!confirm('确定删除该账号？删除后无法恢复')) return;
+            const n = document.getElementById('config_account').value;
+            if(!confirm('确定删除？')) return;
             fetch('/api/binance/delete', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name})
-            }).then(res => res.json()).then(data => {
-                alert(data.msg);
+                body: JSON.stringify({name:n})
+            }).then(r=>r.json()).then(d=>{
+                alert(d.msg);
                 location.reload();
             });
         }
 
-        // 账号配置 - 账号配置
         function loadAccountConfig() {
-            const account = document.getElementById('config_account').value;
-            fetch(`/api/config?account=${account}`).then(res => res.json()).then(cfg => {
-                document.getElementById('config_model').value = cfg.model_type || 'zhipu';
-                document.getElementById('config_prompt').value = cfg.prompt || '';
-                document.getElementById('config_daily_limit').value = cfg.daily_limit || 8;
-                document.getElementById('config_interval').value = cfg.auto_interval || 60;
+            const a = document.getElementById('config_account').value;
+            fetch(`/api/config?account=${a}`).then(r=>r.json()).then(c=>{
+                document.getElementById('config_model').value = c.model_type||'zhipu';
+                document.getElementById('config_prompt').value = c.prompt||'';
+                document.getElementById('config_daily_limit').value = c.daily_limit||8;
+                document.getElementById('config_interval').value = c.auto_interval||60;
             });
         }
 
         function saveAccountConfig() {
-            const account = document.getElementById('config_account').value;
-            const model_type = document.getElementById('config_model').value;
-            const prompt = document.getElementById('config_prompt').value;
-            const daily_limit = parseInt(document.getElementById('config_daily_limit').value);
-            const auto_interval = parseInt(document.getElementById('config_interval').value);
-
             fetch('/api/config/save', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
-                    account, model_type, prompt, daily_limit, auto_interval
+                    account: document.getElementById('config_account').value,
+                    model_type: document.getElementById('config_model').value,
+                    prompt: document.getElementById('config_prompt').value,
+                    daily_limit: parseInt(document.getElementById('config_daily_limit').value),
+                    auto_interval: parseInt(document.getElementById('config_interval').value)
                 })
-            }).then(res => res.json()).then(data => {
-                document.getElementById('config_log').innerText = data.msg;
-                alert('账号配置保存成功');
+            }).then(r=>r.json()).then(d=>{
+                alert('保存成功');
             });
         }
 
-        // 发文记录
         function queryRecords() {
-            const account = document.getElementById('record_account').value;
-            const date = document.getElementById('record_date').value;
-            fetch(`/api/records?account=${account}&date=${date}`).then(res => res.json()).then(records => {
-                if (records.length === 0) {
-                    document.getElementById('records_list').innerHTML = '<div class="empty-state">暂无记录</div>';
-                    return;
-                }
-                const html = records.map(r => `
+            const a = document.getElementById('record_account').value;
+            const d = document.getElementById('record_date').value;
+            fetch(`/api/records?account=${a}&date=${d}`).then(r=>r.json()).then(list=>{
+                let html = '';
+                list.forEach(item=>{
+                    html+=`
                     <div class="record-item">
                         <div class="record-header">
-                            <span>${r.time} | ${r.account} | ${r.mode === 'auto' ? '自动' : '手动'}</span>
-                            <span>${r.symbol} | ${r.status === 'success' ? '成功' : '失败'}</span>
+                            <span>${item.time} | ${item.account} | ${item.mode=='auto'?'自动':'手动'}</span>
+                            <span>${item.symbol} | ${item.status=='success'?'成功':'失败'}</span>
                         </div>
-                        <div class="record-content">${r.content}</div>
-                    </div>
-                `).join('');
-                document.getElementById('records_list').innerHTML = html;
+                        <div class="record-content">${item.content}</div>
+                    </div>`;
+                });
+                document.getElementById('records_list').innerHTML = html || '<div class="empty-state">暂无记录</div>';
             });
         }
 
         function exportRecords() {
-            const account = document.getElementById('record_account').value;
-            const date = document.getElementById('record_date').value;
-            window.open(`/api/export?account=${account}&date=${date}`);
-        }
-
-        function deleteSelectedRecords() {
-            const account = document.getElementById('delete_account').value;
-            const date = document.getElementById('delete_date').value;
-            if (!confirm('确定删除选中的记录？删除后无法恢复')) return;
-            fetch('/api/records/delete', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({account, date})
-            }).then(res => res.json()).then(data => {
-                alert(data.msg);
-                queryRecords();
-            });
-        }
-
-        function deleteAllRecords() {
-            if (!confirm('确定删除所有记录？删除后无法恢复')) return;
-            fetch('/api/records/delete/all', {method: 'POST'}).then(res => res.json()).then(data => {
-                alert(data.msg);
-                queryRecords();
-            });
+            const a = document.getElementById('record_account').value;
+            const d = document.getElementById('record_date').value;
+            window.open(`/api/export?account=${a}&date=${d}`);
         }
 
         window.onload = function() {
-            document.getElementById('record_date').value = new Date().toISOString().split('T')[0];
-            document.getElementById('delete_date').value = new Date().toISOString().split('T')[0];
             refreshAutoStats();
             loadAccountConfig();
-            // 加载全局Key状态（仅显示是否已配置）
-            fetch('/api/global_keys').then(res => res.json()).then(keys => {
-                if (keys.deepseek) document.getElementById('global_deepseek_key').value = '********';
-                if (keys.zhipu) document.getElementById('global_zhipu_key').value = '********';
+            fetch('/api/global_keys').then(r=>r.json()).then(k=>{
+                if(k.deepseek) document.getElementById('global_deepseek_key').value='********';
+                if(k.zhipu) document.getElementById('global_zhipu_key').value='********';
             });
         };
     </script>
@@ -728,213 +650,152 @@ UI_TEMPLATE = """
 </html>
 """
 
-# ========== 路由 ==========
 @app.route('/')
 def index():
-    # 兼容原有环境变量（首次运行加载）
     if not BINANCE_ACCOUNTS:
-        binance_accounts = os.getenv("BINANCE_ACCOUNTS", "[]")
         try:
-            BINANCE_ACCOUNTS.extend(json.loads(binance_accounts))
+            BINANCE_ACCOUNTS.extend(json.loads(os.getenv("BINANCE_ACCOUNTS", "[]")))
         except:
             pass
     return render_template_string(UI_TEMPLATE, accounts=BINANCE_ACCOUNTS)
 
-# 全局模型Key接口
 @app.route('/api/global_keys')
-def get_global_keys():
+def api_global_keys():
     return jsonify({
         "deepseek": bool(GLOBAL_MODEL_KEYS["deepseek"]),
         "zhipu": bool(GLOBAL_MODEL_KEYS["zhipu"])
     })
 
 @app.route('/api/global_keys/save', methods=['POST'])
-def save_global_keys():
-    data = request.json
-    if data.get('deepseek'):
-        GLOBAL_MODEL_KEYS["deepseek"] = data['deepseek']
-    if data.get('zhipu'):
-        GLOBAL_MODEL_KEYS["zhipu"] = data['zhipu']
-    return jsonify({"msg": "全局模型Key保存成功"})
+def api_global_save():
+    d = request.json
+    if d.get('deepseek'): GLOBAL_MODEL_KEYS['deepseek'] = d['deepseek']
+    if d.get('zhipu'): GLOBAL_MODEL_KEYS['zhipu'] = d['zhipu']
+    return jsonify({"msg":"ok"})
 
-# 币安账号管理接口
 @app.route('/api/binance/add', methods=['POST'])
-def add_binance_account():
-    data = request.json
-    name = data.get('name')
-    key = data.get('key')
-    if not name or not key:
-        return jsonify({"msg": "账号名称和API Key不能为空"})
-    for acc in BINANCE_ACCOUNTS:
-        if acc["name"] == name:
-            return jsonify({"msg": "账号已存在"})
-    BINANCE_ACCOUNTS.append({"name": name, "key": key})
-    return jsonify({"msg": "账号添加成功"})
+def api_binance_add():
+    d = request.json
+    n = d.get('name')
+    k = d.get('key')
+    for a in BINANCE_ACCOUNTS:
+        if a['name'] == n:
+            return jsonify({"msg":"已存在"})
+    BINANCE_ACCOUNTS.append({"name":n,"key":k})
+    return jsonify({"msg":"添加成功"})
 
 @app.route('/api/binance/delete', methods=['POST'])
-def delete_binance_account():
-    name = request.json.get('name')
+def api_binance_del():
+    n = request.json.get('name')
     global BINANCE_ACCOUNTS
-    BINANCE_ACCOUNTS = [acc for acc in BINANCE_ACCOUNTS if acc["name"] != name]
-    if name in ACCOUNT_CONFIG:
-        del ACCOUNT_CONFIG[name]
-    return jsonify({"msg": "账号删除成功"})
+    BINANCE_ACCOUNTS = [a for a in BINANCE_ACCOUNTS if a['name']!=n]
+    if n in ACCOUNT_CONFIG:
+        del ACCOUNT_CONFIG[n]
+    return jsonify({"msg":"删除成功"})
 
-# 自动模式接口
 @app.route('/api/stats')
-def get_stats():
+def api_stats():
     return jsonify(get_today_stats())
 
 @app.route('/api/auto/start', methods=['POST'])
-def auto_start():
-    account = request.json.get('account')
-    ok, msg = start_auto_task(account)
-    return jsonify({"msg": msg})
+def api_auto_start():
+    a = request.json.get('account')
+    ok, msg = start_auto_task(a)
+    return jsonify({"msg":msg})
 
 @app.route('/api/auto/stop', methods=['POST'])
-def auto_stop():
-    account = request.json.get('account')
-    ok, msg = stop_auto_task(account)
-    return jsonify({"msg": msg})
+def api_auto_stop():
+    a = request.json.get('account')
+    ok, msg = stop_auto_task(a)
+    return jsonify({"msg":msg})
 
-# 手动模式接口
 @app.route('/api/topic/random')
-def get_random_topic_api():
+def api_topic_random():
     from topic_main import get_random_topic
-    topic = get_random_topic()
-    return jsonify(topic or {"error": "获取失败"})
+    return jsonify(get_random_topic())
 
 @app.route('/api/topic')
-def get_topic_api():
+def api_topic_single():
+    s = request.args.get('symbol','BTCUSDT')
     from topic_main import get_single_symbol_topic
-    symbol = request.args.get('symbol')
-    topic = get_single_symbol_topic(symbol)
-    return jsonify(topic or {"error": "获取失败"})
+    return jsonify(get_single_symbol_topic(s))
 
 @app.route('/api/generate', methods=['POST'])
-def generate_api():
-    data = request.json
-    account = data.get('account')
-    analysis = data.get('analysis')
-    if not account or not analysis:
-        return "参数错误"
-    cfg = ACCOUNT_CONFIG.get(account, {})
-    model_type = cfg.get('model_type', 'zhipu')
-    model_key = GLOBAL_MODEL_KEYS.get(model_type, "")
-    prompt = cfg.get('prompt', '')
+def api_generate():
+    d = request.json
+    a = d.get('account')
+    t = d.get('analysis')
+    cfg = ACCOUNT_CONFIG.get(a, {})
+    m = cfg.get('model_type','zhipu')
+    key = GLOBAL_MODEL_KEYS.get(m,'')
+    p = cfg.get('prompt','')
     from ai_core import generate_post_content
-    content = generate_post_content(analysis, model_type, model_key, prompt)
-    return content
+    return generate_post_content(t, m, key, p)
 
 @app.route('/api/publish', methods=['POST'])
-def publish_api():
-    data = request.json
-    account = data.get('account')
-    content = data.get('content')
-    if not account or not content:
-        return jsonify({"success": False, "msg": "参数错误"})
-    binance_key = next((a["key"] for a in BINANCE_ACCOUNTS if a["name"] == account), None)
+def api_publish():
+    d = request.json
+    a = d.get('account')
+    c = d.get('content')
+    key = next((x['key'] for x in BINANCE_ACCOUNTS if x['name']==a), None)
     from post_main import post_to_binance
-    success, msg, post_id = post_to_binance(content, binance_key)
-    record = {
-        "date": get_today_date(),
-        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "account": account,
-        "symbol": "手动",
-        "content": content,
-        "post_id": post_id,
-        "mode": "manual",
-        "status": "success" if success else "fail",
-        "msg": msg
-    }
-    save_record(record)
-    return jsonify({"success": success, "msg": msg, "post_id": post_id})
-
-# 账号配置接口
-@app.route('/api/config')
-def get_config():
-    account = request.args.get('account')
-    cfg = ACCOUNT_CONFIG.get(account, {})
-    return jsonify({
-        "model_type": cfg.get("model_type", "zhipu"),
-        "prompt": cfg.get("prompt", ""),
-        "daily_limit": cfg.get("daily_limit", 8),
-        "auto_interval": cfg.get("auto_interval", 60)
+    ok, msg, pid = post_to_binance(c, key)
+    save_record({
+        "date":get_today_date(),
+        "time":datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "account":a,
+        "symbol":"手动",
+        "content":c,
+        "post_id":pid,
+        "mode":"manual",
+        "status":"success" if ok else "fail",
+        "msg":msg
     })
+    return jsonify({"success":ok,"msg":msg})
+
+@app.route('/api/config')
+def api_config_get():
+    a = request.args.get('account')
+    return jsonify(ACCOUNT_CONFIG.get(a, {}))
 
 @app.route('/api/config/save', methods=['POST'])
-def save_config():
-    data = request.json
-    account = data.get('account')
-    if account not in ACCOUNT_CONFIG:
-        ACCOUNT_CONFIG[account] = {}
-    ACCOUNT_CONFIG[account]['model_type'] = data['model_type']
-    ACCOUNT_CONFIG[account]['prompt'] = data['prompt']
-    ACCOUNT_CONFIG[account]['daily_limit'] = data['daily_limit']
-    ACCOUNT_CONFIG[account]['auto_interval'] = data['auto_interval']
-    return jsonify({"msg": "账号配置保存成功"})
+def api_config_save():
+    d = request.json
+    a = d.get('account')
+    ACCOUNT_CONFIG[a] = {
+        "model_type":d.get('model_type'),
+        "prompt":d.get('prompt'),
+        "daily_limit":d.get('daily_limit'),
+        "auto_interval":d.get('auto_interval')
+    }
+    return jsonify({"msg":"ok"})
 
-# 发文记录接口
 @app.route('/api/records')
-def get_records():
-    account = request.args.get('account', '')
-    date = request.args.get('date', '')
-    records = load_records()
-    filtered = []
-    for r in records:
-        if account and r.get('account') != account:
-            continue
-        if date and r.get('date') != date:
-            continue
-        filtered.append(r)
-    return jsonify(filtered)
+def api_records():
+    a = request.args.get('account','')
+    d = request.args.get('date','')
+    r = load_records()
+    f = []
+    for x in r:
+        if a and x.get('account')!=a: continue
+        if d and x.get('date')!=d: continue
+        f.append(x)
+    return jsonify(f)
 
 @app.route('/api/export')
-def export_records():
-    account = request.args.get('account', '')
-    date = request.args.get('date', '')
-    records = load_records()
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["日期", "时间", "账号", "模式", "交易对", "内容", "状态", "消息"])
-    for r in records:
-        if account and r.get('account') != account:
-            continue
-        if date and r.get('date') != date:
-            continue
-        writer.writerow([
-            r.get('date'), r.get('time'), r.get('account'),
-            r.get('mode'), r.get('symbol'), r.get('content'),
-            r.get('status'), r.get('msg')
-        ])
-    output.seek(0)
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=发文记录_{get_today_date()}.csv"}
-    )
-
-@app.route('/api/records/delete', methods=['POST'])
-def delete_records():
-    data = request.json
-    account = data.get('account', '')
-    date = data.get('date', '')
-    records = load_records()
-    filtered = []
-    for r in records:
-        if account and r.get('account') != account:
-            filtered.append(r)
-            continue
-        if date and r.get('date') != date:
-            filtered.append(r)
-            continue
-    save_json(RECORDS_FILE, filtered)
-    return jsonify({"msg": "删除成功"})
-
-@app.route('/api/records/delete/all', methods=['POST'])
-def delete_all_records():
-    save_json(RECORDS_FILE, [])
-    return jsonify({"msg": "所有记录已删除"})
+def api_export():
+    a = request.args.get('account','')
+    d = request.args.get('date','')
+    r = load_records()
+    o = StringIO()
+    w = csv.writer(o)
+    w.writerow(["日期","时间","账号","模式","交易对","内容","状态","消息"])
+    for x in r:
+        if a and x.get('account')!=a: continue
+        if d and x.get('date')!=d: continue
+        w.writerow([x.get('date'),x.get('time'),x.get('account'),x.get('mode'),x.get('symbol'),x.get('content'),x.get('status'),x.get('msg')])
+    o.seek(0)
+    return Response(o.getvalue(), mimetype="text/csv", headers={"Content-Disposition":"attachment; filename=posts.csv"})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
