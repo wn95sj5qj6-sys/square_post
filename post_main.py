@@ -1,34 +1,24 @@
-# post_main.py
-from ai_core import create_ai_client
+# post_main.py 开头修改示例
+from ai_core import ai_generate
 
-class PostService:
-    def __init__(self, model_config):
-        """
-        初始化发文服务
-        :param model_config: 模型配置字典 {
-            "model_type": "zhipu"/"deepseek",
-            "api_key": "你的API Key"
-        }
-        """
-        self.model_type = model_config.get("model_type")
-        self.api_key = model_config.get("api_key")
-        # 自动创建对应模型的AI客户端
-        self.ai_client = create_ai_client(self.model_type, self.api_key)
+class PostManager:
+    def __init__(self, sys_config):
+        self.cfg = sys_config
 
-    def generate_post_content(self, topic, requirement="生成一篇优质原创发文"):
-        """
-        生成帖子内容（自动使用配置的模型）
-        """
-        prompt = f"请围绕主题【{topic}】，{requirement}，生成流畅、正式的发文内容"
-        return self.ai_client.generate_content(prompt)
+    def generate_post(self, topic, requirement=""):
+        prompt = f"围绕主题：{topic}，{requirement}，生成一篇适合广场发布的优质文案"
+        # 根据当前配置自动选模型、密钥、温度
+        if self.cfg["current_model_type"] == "deepseek":
+            key = self.cfg["deepseek_api_key"]
+        else:
+            key = self.cfg["zhipu_api_key"]
+        
+        return ai_generate(
+            model_type=self.cfg["current_model_type"],
+            model_name=self.cfg["current_model_name"],
+            api_key=key,
+            prompt=prompt,
+            temperature=self.cfg["temperature"]
+        )
 
-    def publish_post(self, content, platform="默认平台"):
-        """
-        执行发文（手动/自动通用）
-        """
-        try:
-            # 这里是你原有的发文逻辑
-            print(f"[{self.model_type} 模型] 正在 {platform} 发文：{content[:30]}...")
-            return {"status": "success", "msg": "发文成功"}
-        except Exception as e:
-            return {"status": "fail", "msg": f"发文失败：{str(e)}"}
+    # 下面你原有 publish 等函数完全不动
