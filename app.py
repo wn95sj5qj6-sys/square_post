@@ -13,13 +13,13 @@ MODEL_ACCOUNTS = [
         "id": 1,
         "name": "账号1 - DeepSeek",
         "model_type": "deepseek",
-        "api_key": "你的DEEPSEEK_API_KEY",
+        "api_key": "sk-1068d968c1594a75bd266aaf869ce645",
     },
     {
         "id": 2,
         "name": "账号2 - 智谱",
         "model_type": "zhipu",
-        "api_key": "你的ZHIPU_API_KEY",
+        "api_key": "255b13ab88924d52ace6dc83474bf820.m7UuiXLWCiKHRTod",
     },
 ]
 
