@@ -605,20 +605,26 @@ def api_publish():
     c = d['content']
     binance_key = next((x['key'] for x in BINANCE_ACCOUNTS if x['name']==a), None)
     from post_main import post_to_binance
-    ok, msg, pid = post_to_binance(c, binance_key)
+    
+    # 获取币安完整返回值
+    binance_response = post_to_binance(c, binance_key)
+    
+    # 记录日志
     record = {
         "date": get_today_date(),
         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "account": a,
         "symbol": "手动",
         "content": c,
-        "post_id": pid,
+        "post_id": binance_response.get("data", {}).get("postId"),
         "mode": "manual",
-        "status": "success" if ok else "fail",
-        "msg": msg
+        "status": "success" if binance_response.get("success") else "fail",
+        "msg": binance_response.get("message") or binance_response.get("msg")
     }
     save_record(record)
-    return jsonify({"success":ok,"msg":msg})
+    
+    # 直接返回币安原生数据（包含链接）
+    return jsonify(binance_response)
 
 @app.route('/api/config')
 def api_config():
