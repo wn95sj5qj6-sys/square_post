@@ -41,7 +41,7 @@ def generate_post_content(topic_text, model_type, api_key, custom_prompt=None):
     1. 语言要口语化，不要生硬，带一点交易员的感觉
     2. 突出关键数据：价格、涨跌幅、振幅
     3. 结尾可以带一句简短的市场看法，不要过于肯定
-    4. 必须带上交易对标签，比如 #BTCUSDT
+    4. 必须带上交易对标签，比如 $BTCUSDT
     行情数据：
     """
     if custom_prompt and custom_prompt.strip():
