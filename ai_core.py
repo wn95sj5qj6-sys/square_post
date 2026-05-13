@@ -1,31 +1,37 @@
 # ai_core.py
 import requests
 import json
-from config import ZHIPU_API_URL, DEEPSEEK_API_URL, get_headers
+from config import (
+    ZHIPU_API_URL,
+    DEEPSEEK_API_URL,
+    ZHIPU_MODEL_NAME,
+    DEEPSEEK_MODEL_NAME,
+    get_headers
+)
 
-class AIClient:
-    def __init__(self, model_type, api_key):
+class AICore:
+    def __init__(self, model_type: str, api_key: str):
         """
-        初始化AI客户端
-        :param model_type: 模型类型 zhipu / deepseek
-        :param api_key: 对应模型的API密钥
+        :param model_type: zhipu 或 deepseek
+        :param api_key: 对应模型的API Key
         """
-        self.model_type = model_type
-        self.api_key = api_key
-        self.api_url = DEEPSEEK_API_URL if model_type == "deepseek" else ZHIPU_API_URL
-        self.headers = get_headers(api_key, model_type)
+        self.model_type = model_type.strip().lower()
+        self.api_key = api_key.strip()
+        self.headers = get_headers(self.api_key, self.model_type)
 
-    def generate_content(self, prompt, temperature=0.7, max_tokens=2048):
-        """
-        统一调用接口生成文案（双模型通用）
-        :param prompt: 提示词
-        :return: 生成的文本内容
-        """
+    def generate(self, prompt: str, temperature=0.7, max_tokens=2048):
         try:
-            # 请求体适配双模型
-            model_name = "deepseek-chat" if self.model_type == "deepseek" else "glm-4"
+            # 选择模型 & 接口
+            if self.model_type == "deepseek":
+                url = DEEPSEEK_API_URL
+                model = DEEPSEEK_MODEL_NAME
+            else:
+                url = ZHIPU_API_URL
+                model = ZHIPU_MODEL_NAME
+
+            # 请求体（双模型兼容）
             data = {
-                "model": model_name,
+                "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": temperature,
                 "max_tokens": max_tokens,
@@ -33,22 +39,21 @@ class AIClient:
             }
 
             response = requests.post(
-                url=self.api_url,
+                url=url,
                 headers=self.headers,
                 data=json.dumps(data),
                 timeout=60
             )
 
             if response.status_code != 200:
-                return f"接口调用失败：{response.status_code} - {response.text}"
+                return f"【{self.model_type}】API调用失败：{response.status_code} {response.text}"
 
             result = response.json()
-            # 统一解析返回结果
             return result["choices"][0]["message"]["content"].strip()
 
         except Exception as e:
-            return f"AI生成失败：{str(e)}"
+            return f"【{self.model_type}】生成异常：{str(e)}"
 
-# 快捷调用函数（给业务层使用）
-def create_ai_client(model_type, api_key):
-    return AIClient(model_type, api_key)
+# 给业务层调用的快捷函数
+def get_ai_client(model_type: str, api_key: str):
+    return AICore(model_type, api_key)
