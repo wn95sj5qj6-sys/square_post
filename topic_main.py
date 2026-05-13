@@ -276,7 +276,7 @@ def build_topic_text(d, short_trend, long_trend, short_oi, long_oi, funding, fun
     fund = funding
     sig = "；".join(signals)
     conf = "；".join(conflicts)
-    funding_val_str = f"{funding_rate:.4%}"
+    funding_val_str = f"{funding_rate_val:.4%}"
 
     return (
         f"{d['symbol']}，价格{price}，24h涨跌幅{chg}%，24h振幅{amplitude}%\n"
@@ -360,7 +360,7 @@ def get_single_symbol_topic(symbol):
     funding_val = float(funding_data.get("lastFundingRate", 0)) if funding_data else 0.0
     chg = float(ticker["priceChangePercent"])
     sig = detect_signal(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
-    conf = detect_conflict(short_trend, long_trend, short_oi, funding_st, chg)
+    conf = detect_conflict(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
     topic_text = build_topic_text(
         ticker, short_trend, long_trend,
         short_oi, long_oi, funding_st,
