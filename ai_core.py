@@ -8,7 +8,7 @@ def call_ai(model_type, api_key, prompt, retry=3):
     
     if model_type == "zhipu":
         url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-        model = "glm-4.7-flash"
+        model = "glm-4.7-Flash"
     else:
         url = "https://api.deepseek.com/chat/completions"
         model = "deepseek-v4-flash"
