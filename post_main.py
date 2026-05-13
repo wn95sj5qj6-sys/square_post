@@ -1,5 +1,4 @@
 import requests
-
 def post_content(content, api_key):
     try:
         headers = {
