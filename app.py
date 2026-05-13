@@ -61,7 +61,7 @@ def get_today_stats():
         stats[name] = {
             "used": used,
             "auto_used": auto_used,
-            "manual_used": manual,
+            "manual_used": manual_used,
             "limit": limit,
             "remaining": calculate_remaining(used, limit),
             "running": AUTO_TASKS.get(name, False)
@@ -181,7 +181,6 @@ UI_TEMPLATE = """
             <button class="tab-btn" onclick="switchTab('records')">发文记录</button>
         </div>
 
-        <!-- 自动模式 -->
         <div id="auto" class="tab-content">
             <div class="form-group">
                 <label>选择账号</label>
@@ -201,7 +200,6 @@ UI_TEMPLATE = """
             </div>
         </div>
 
-        <!-- 手动模式【修复：自动选交易对】 -->
         <div id="manual" class="tab-content">
             <div class="form-group">
                 <label>选择发文账号</label>
@@ -234,7 +232,6 @@ UI_TEMPLATE = """
             <div id="manual_log" class="form-group"></div>
         </div>
 
-        <!-- 账号配置 -->
         <div id="config" class="tab-content active">
             <div class="form-group">
                 <label>全局DeepSeek API Key</label>
@@ -289,7 +286,6 @@ UI_TEMPLATE = """
             <div id="config_log" class="form-group"></div>
         </div>
 
-        <!-- 发文记录【修复：删除按钮】 -->
         <div id="records" class="tab-content">
             <div class="form-group">
                 <div style="display:flex;gap:12px;">
@@ -356,7 +352,6 @@ UI_TEMPLATE = """
             }).then(r=>r.json()).then(d=>{alert(d.msg);refreshAutoStats();});
         }
 
-        // 【修复：自动选交易对】
         function autoSelectSymbol() {
             fetch('/api/topic/random').then(r=>r.json()).then(t=>{
                 document.getElementById('manual_symbol').value=t.symbol;
@@ -678,4 +673,4 @@ def api_export():
     return Response(o.getvalue(),mimetype="text/csv",headers={"Content-Disposition":"attachment; filename=records.csv"})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False)
