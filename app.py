@@ -229,7 +229,7 @@ UI_TEMPLATE = """
                 <textarea id="manual_content"></textarea>
             </div>
             <button class="btn btn-success" onclick="publishPost()">确认发文</button>
-            <div id="manual_log" class="form-group"></div>
+            <div id="manual_log" class="form-group" style="white-space: pre-wrap; background: #f8f9fa; padding: 10px; border-radius: 6px;"></div>
         </div>
 
         <div id="config" class="tab-content active">
@@ -353,42 +353,48 @@ UI_TEMPLATE = """
         }
 
         function autoSelectSymbol() {
+            document.getElementById('manual_log').innerText = "⏳ 正在自动选择交易对...";
             fetch('/api/topic/random').then(r=>r.json()).then(t=>{
-                document.getElementById('manual_symbol').value=t.symbol;
-                document.getElementById('manual_analysis').value=t.text;
+                document.getElementById('manual_symbol').value = t.symbol;
+                document.getElementById('manual_analysis').value = t.text;
+                document.getElementById('manual_log').innerText = "✅ 已自动选择交易对并生成分析";
             });
         }
 
         function generateAnalysis() {
-            const s=document.getElementById('manual_symbol').value.trim().toUpperCase();
+            const s = document.getElementById('manual_symbol').value.trim().toUpperCase();
             if(!s)return alert('请输入交易对');
+            document.getElementById('manual_log').innerText = "⏳ 正在生成完整行情分析...";
             fetch(`/api/topic?symbol=${s}`).then(r=>r.json()).then(t=>{
-                document.getElementById('manual_analysis').value=t.text;
+                document.getElementById('manual_analysis').value = t.text;
+                document.getElementById('manual_log').innerText = "✅ 行情分析生成完成";
             });
         }
 
         function generatePostContent() {
-            const a=document.getElementById('manual_account').value;
-            const t=document.getElementById('manual_analysis').value;
+            const a = document.getElementById('manual_account').value;
+            const t = document.getElementById('manual_analysis').value;
+            document.getElementById('manual_log').innerText = "⏳ AI 正在生成发文内容...";
             fetch('/api/generate',{
                 method:'POST',
                 headers:{'Content-Type':'application/json'},
                 body:JSON.stringify({account:a,analysis:t})
             }).then(r=>r.text()).then(c=>{
-                document.getElementById('manual_content').value=c;
+                document.getElementById('manual_content').value = c;
+                document.getElementById('manual_log').innerText = "✅ 发文内容生成完成";
             });
         }
 
         function publishPost() {
-            const a=document.getElementById('manual_account').value;
-            const c=document.getElementById('manual_content').value;
+            const a = document.getElementById('manual_account').value;
+            const c = document.getElementById('manual_content').value;
+            document.getElementById('manual_log').innerText = "⏳ 正在提交发文到币安...";
             fetch('/api/publish',{
                 method:'POST',
                 headers:{'Content-Type':'application/json'},
                 body:JSON.stringify({account:a,content:c})
             }).then(r=>r.json()).then(d=>{
-                document.getElementById('manual_log').innerText=JSON.stringify(d,null,2);
-                alert(d.msg);
+                document.getElementById('manual_log').innerText = JSON.stringify(d, null, 2);
             });
         }
 
