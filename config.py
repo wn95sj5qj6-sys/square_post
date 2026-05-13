@@ -1,8 +1,18 @@
-import os
-from dotenv import load_dotenv
-load_dotenv()
+# config.py
+# 全局配置文件，无需手动修改，配置统一在 app.py 管理
 
-ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
-BINANCE_API_KEYS = os.getenv("BINANCE_ACCOUNTS", "").strip().split(",")
-BINANCE_API_KEYS = [k.strip() for k in BINANCE_API_KEYS if k.strip()]
-EXPIRE_HOURS = 72
+# 模型接口地址
+ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+
+# 请求头模板
+def get_headers(api_key, model_type):
+    if model_type == "deepseek":
+        return {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
