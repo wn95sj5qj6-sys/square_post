@@ -2,7 +2,7 @@ from flask import Flask, render_template_string, request, jsonify
 import threading
 import time
 from post_main import PostManager
-from topic_main import TopicManager
+# from topic_main import TopicManager
 from utils import Utils
 
 app = Flask(__name__)
@@ -23,7 +23,7 @@ auto_running = False
 
 # 初始化业务
 post_manager = PostManager(sys_config=SYS_CONFIG)
-topic_manager = TopicManager()
+# topic_manager = TopicManager()
 utils = Utils()
 
 # 完整前端页面：保留你原有所有UI布局，只新增【模型配置面板】，不改动原有样式
