@@ -1,8 +1,5 @@
-import os
-from dotenv import load_dotenv
-load_dotenv()
-
-ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
-BINANCE_API_KEYS = os.getenv("BINANCE_ACCOUNTS", "").strip().split(",")
-BINANCE_API_KEYS = [k.strip() for k in BINANCE_API_KEYS if k.strip()]
-EXPIRE_HOURS = 72
+# 接口地址（不存key）
+ZHIPU_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+ZHIPU_MODEL = "glm-4"
