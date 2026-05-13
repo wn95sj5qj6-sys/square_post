@@ -10,14 +10,37 @@ from io import StringIO
 app = Flask(__name__)
 
 # 全局配置（仅存服务器内存）
-BINANCE_ACCOUNTS = []
-ACCOUNT_CONFIG = {}
+BINANCE_ACCOUNTS = []  # 币安账号列表（网页配置）
+ACCOUNT_CONFIG = {}    # 每个账号的模型配置、提示词、限额、间隔
 AUTO_TASKS = {}
 DATA_DIR = "data"
 RECORDS_FILE = os.path.join(DATA_DIR, "records.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # ========== 工具函数 ==========
+def load_json(file_path, default=None):
+    if default is None:
+        default = []
+    if not os.path.exists(file_path):
+        return default
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"加载文件失败：{e}")
+        return default
+
+def save_json(file_path, data):
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def get_today_date():
+    return datetime.datetime.now().strftime("%Y-%m-%d")
+
+def calculate_remaining(used, limit):
+    return max(0, limit - used)
+
 def load_records():
     return load_json(RECORDS_FILE, [])
 
@@ -64,18 +87,21 @@ def auto_publish_task(account_name):
             break
 
         # 1. 获取交易对
+        from topic_main import get_random_topic
         topic = get_random_topic()
         if not topic:
             time.sleep(10)
             continue
 
         # 2. 生成发文内容
+        from ai_core import generate_post_content
         content = generate_post_content(topic["text"], model_type, model_key, custom_prompt)
         if "错误" in content:
             time.sleep(10)
             continue
 
         # 3. 发文
+        from post_main import post_to_binance
         success, msg, post_id = post_to_binance(content, binance_key)
         record = {
             "date": get_today_date(),
@@ -103,7 +129,7 @@ def stop_auto_task(account_name):
     AUTO_TASKS[account_name] = False
     return True, "已停止自动发文"
 
-# ========== 前端UI（1:1还原原界面，无任何修改） ==========
+# ========== 前端UI（1:1还原原界面，币安账号+模型配置都有） ==========
 UI_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -290,14 +316,14 @@ UI_TEMPLATE = """
         <h1>币安自动发文助手 <span class="version-badge">v2.2</span></h1>
 
         <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('auto')">自动模式</button>
+            <button class="tab-btn" onclick="switchTab('auto')">自动模式</button>
             <button class="tab-btn" onclick="switchTab('manual')">手动模式</button>
-            <button class="tab-btn" onclick="switchTab('config')">账号配置</button>
+            <button class="tab-btn active" onclick="switchTab('config')">账号配置</button>
             <button class="tab-btn" onclick="switchTab('records')">发文记录</button>
         </div>
 
-        <!-- 自动模式（1:1还原原UI + 卡片式统计） -->
-        <div id="auto" class="tab-content active">
+        <!-- 自动模式 -->
+        <div id="auto" class="tab-content">
             <div class="form-group">
                 <label>选择账号</label>
                 <select id="auto_account">
@@ -318,7 +344,7 @@ UI_TEMPLATE = """
             </div>
         </div>
 
-        <!-- 手动模式（1:1还原原UI + 自动获取交易对连通性修复） -->
+        <!-- 手动模式 -->
         <div id="manual" class="tab-content">
             <div class="form-group">
                 <label>选择发文账号</label>
@@ -356,8 +382,21 @@ UI_TEMPLATE = """
             <div id="manual_log" class="form-group"></div>
         </div>
 
-        <!-- 账号配置（1:1还原原UI + 模型绑定） -->
-        <div id="config" class="tab-content">
+        <!-- 账号配置（修复：币安账号管理+模型配置都有） -->
+        <div id="config" class="tab-content active">
+            <!-- 币安账号管理（新增/删除） -->
+            <div class="form-group">
+                <label>添加币安广场账号</label>
+                <div style="display: flex; gap: 12px; margin-bottom: 8px;">
+                    <input type="text" id="new_acc_name" placeholder="账号名称">
+                    <input type="text" id="new_acc_key" placeholder="币安API Key">
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-secondary" onclick="addBinanceAccount()">添加账号</button>
+                    <button class="btn btn-danger" onclick="deleteBinanceAccount()">删除选中账号</button>
+                </div>
+            </div>
+
             <div class="form-group">
                 <label>选择要配置的账号</label>
                 <select id="config_account" onchange="loadAccountConfig()">
@@ -399,7 +438,7 @@ UI_TEMPLATE = """
             <div id="config_log" class="form-group"></div>
         </div>
 
-        <!-- 发文记录（1:1还原原UI + 删除功能） -->
+        <!-- 发文记录 -->
         <div id="records" class="tab-content">
             <div class="form-group">
                 <div style="display: flex; gap: 12px; align-items: center;">
@@ -535,7 +574,35 @@ UI_TEMPLATE = """
             });
         }
 
-        // 账号配置
+        // 账号配置 - 币安账号管理
+        function addBinanceAccount() {
+            const name = document.getElementById('new_acc_name').value.trim();
+            const key = document.getElementById('new_acc_key').value.trim();
+            if (!name || !key) return alert('账号名称和API Key不能为空');
+            fetch('/api/binance/add', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name, key})
+            }).then(res => res.json()).then(data => {
+                alert(data.msg);
+                location.reload();
+            });
+        }
+
+        function deleteBinanceAccount() {
+            const name = document.getElementById('config_account').value;
+            if (!confirm('确定删除该账号？删除后无法恢复')) return;
+            fetch('/api/binance/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name})
+            }).then(res => res.json()).then(data => {
+                alert(data.msg);
+                location.reload();
+            });
+        }
+
+        // 账号配置 - 模型配置
         function loadAccountConfig() {
             const account = document.getElementById('config_account').value;
             fetch(`/api/config?account=${account}`).then(res => res.json()).then(cfg => {
@@ -624,6 +691,7 @@ UI_TEMPLATE = """
             document.getElementById('record_date').value = new Date().toISOString().split('T')[0];
             document.getElementById('delete_date').value = new Date().toISOString().split('T')[0];
             refreshAutoStats();
+            loadAccountConfig();
         };
     </script>
 </body>
@@ -633,7 +701,7 @@ UI_TEMPLATE = """
 # ========== 路由 ==========
 @app.route('/')
 def index():
-    # 加载币安账号（兼容原有环境变量，可后续在网页配置）
+    # 兼容原有环境变量（首次运行加载）
     if not BINANCE_ACCOUNTS:
         binance_accounts = os.getenv("BINANCE_ACCOUNTS", "[]")
         try:
@@ -641,6 +709,29 @@ def index():
         except:
             pass
     return render_template_string(UI_TEMPLATE, accounts=BINANCE_ACCOUNTS)
+
+# 币安账号管理接口
+@app.route('/api/binance/add', methods=['POST'])
+def add_binance_account():
+    data = request.json
+    name = data.get('name')
+    key = data.get('key')
+    if not name or not key:
+        return jsonify({"msg": "账号名称和API Key不能为空"})
+    for acc in BINANCE_ACCOUNTS:
+        if acc["name"] == name:
+            return jsonify({"msg": "账号已存在"})
+    BINANCE_ACCOUNTS.append({"name": name, "key": key})
+    return jsonify({"msg": "账号添加成功"})
+
+@app.route('/api/binance/delete', methods=['POST'])
+def delete_binance_account():
+    name = request.json.get('name')
+    global BINANCE_ACCOUNTS
+    BINANCE_ACCOUNTS = [acc for acc in BINANCE_ACCOUNTS if acc["name"] != name]
+    if name in ACCOUNT_CONFIG:
+        del ACCOUNT_CONFIG[name]
+    return jsonify({"msg": "账号删除成功"})
 
 # 自动模式接口
 @app.route('/api/stats')
@@ -662,11 +753,13 @@ def auto_stop():
 # 手动模式接口
 @app.route('/api/topic/random')
 def get_random_topic_api():
+    from topic_main import get_random_topic
     topic = get_random_topic()
     return jsonify(topic or {"error": "获取失败"})
 
 @app.route('/api/topic')
 def get_topic_api():
+    from topic_main import get_single_symbol_topic
     symbol = request.args.get('symbol')
     topic = get_single_symbol_topic(symbol)
     return jsonify(topic or {"error": "获取失败"})
@@ -682,6 +775,7 @@ def generate_api():
     model_type = cfg.get('model_type', 'zhipu')
     api_key = cfg.get('api_key', '')
     prompt = cfg.get('prompt', '')
+    from ai_core import generate_post_content
     content = generate_post_content(analysis, model_type, api_key, prompt)
     return content
 
@@ -693,6 +787,7 @@ def publish_api():
     if not account or not content:
         return jsonify({"success": False, "msg": "参数错误"})
     binance_key = next((a["key"] for a in BINANCE_ACCOUNTS if a["name"] == account), None)
+    from post_main import post_to_binance
     success, msg, post_id = post_to_binance(content, binance_key)
     record = {
         "date": get_today_date(),
