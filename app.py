@@ -79,7 +79,7 @@ def get_all_accounts():
             "model_type": acc_config.get("model_type", "zhipu"),
             "daily_limit": acc_config.get("daily_limit", DEFAULT_DAILY_LIMIT),
             "auto_interval": acc_config.get("auto_interval", DEFAULT_AUTO_INTERVAL),
-            "schedule": acc_config.get("schedule", {}),  # 新增：带回发文计划配置
+            "schedule": acc_config.get("schedule", {}),
             "running": running
         })
     return accounts
@@ -98,7 +98,6 @@ def get_account_by_key(key):
             return acc
     return None
 
-# 【修改：保存配置时支持 schedule】
 def save_account_prompt(account_name, prompt, daily_limit, auto_interval, model_type="zhipu", schedule=None):
     prompts = load_json(PROMPT_FILE)
     data = {
@@ -180,7 +179,7 @@ def delete_records(account=None, date=None, all_records=False):
     save_json(DB_FILE, new_db)
     return len(db) - len(new_db)
 
-# ======================== 自动发文核心 【已修改：接入调度模块】 ========================
+# ======================== 自动发文核心 ========================
 def auto_publisher_worker(account_name):
     while True:
         with status_lock:
@@ -191,11 +190,9 @@ def auto_publisher_worker(account_name):
             time.sleep(10)
             continue
 
-        # ===================== 核心修改：调用调度模块判断是否可发文 =====================
         if not can_publish(account_name, current_acc):
             time.sleep(60)
             continue
-        # ============================================================================
 
         try:
             from topic_main import run_topic
@@ -222,16 +219,14 @@ def auto_publisher_worker(account_name):
                 cfg[f"{account_name}_last_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 cfg[f"{account_name}_last_auto_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 save_json(CONFIG_FILE, cfg)
-                # 【新增：发文成功后计数+1】
                 inc_published(account_name)
-            # ===================== 修改：用随机间隔代替固定间隔 =====================
+
             schedule_cfg = current_acc.get("schedule", {})
             sleep_min = get_random_interval(
                 schedule_cfg.get("interval_min", 8),
                 schedule_cfg.get("interval_max", 25)
             )
             time.sleep(sleep_min * 60)
-            # ======================================================================
         except Exception as e:
             print("自动异常：", e)
             time.sleep(10)
@@ -251,7 +246,7 @@ def stop_account_auto_publish(account_name):
         account_running_status[account_name] = False
     return True
 
-# ======================== 网页模板【关键：账号配置页已加入发文计划设置】 ========================
+# ======================== 网页模板【最终纯净版】 ========================
 UI_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -316,11 +311,8 @@ UI_TEMPLATE = """
         .record-time{color:var(--gray);font-size:12px;}
         .record-content{font-size:14px;line-height:1.5;}
         .delete-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--border);}
-        .schedule-group{background:rgba(0,122,255,0.05);border-radius:12px;padding:16px;margin-bottom:16px;}
-        .schedule-title{font-weight:600;margin-bottom:12px;}
-        .schedule-row{display:flex;gap:12px;flex-wrap:wrap;}
-        .schedule-col{flex:1;min-width:120px;}
-        @media(max-width:480px){.card{padding:16px;}.account-actions-wrapper{flex-direction:column;}.schedule-row{flex-direction:column;}}
+        .grid-row{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:12px;}
+        @media(max-width:480px){.card{padding:16px;}.account-actions-wrapper{flex-direction:column;}.grid-row{grid-template-columns:1fr;}}
     </style>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
 </head>
@@ -356,7 +348,7 @@ UI_TEMPLATE = """
                         <button id="auto_stop_btn" class="btn btn-danger account-action-btn" onclick="stopAuto()"><i class="fa fa-stop"></i> 停止自动发文</button>
                     </div>
                 </div>
-                <div class="form-label" style="margin-top:20px;">今日发文统计（点击查看账号配置）</div>
+                <div class="form-label" style="margin-top:20px;">今日发文统计</div>
                 <div class="stats-grid" id="today_stats">
                     {% for acc_name, stat in today_stats.items() %}
                     <div class="stat-card" id="stat_{{acc_name}}" onclick="showAccountConfig('{{acc_name}}')">
@@ -406,7 +398,7 @@ UI_TEMPLATE = """
                 <button class="btn btn-primary" onclick="submitPost()" style="width:100%">确认发文</button>
                 <div class="log-box" id="manual_log">等待操作...</div>
             </div>
-            <!-- 账号配置【关键：已新增发文计划设置区域】 -->
+            <!-- 账号配置【已清理：删除无用项 + 样式统一】 -->
             <div id="config" class="tab-content">
                 <div class="form-group">
                     <label class="form-label">选择要配置的账号</label>
@@ -427,51 +419,43 @@ UI_TEMPLATE = """
                         <option value="deepseek">DeepSeek V4-Flash</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">每日发文限额</label>
-                    <input type="number" id="config_daily_limit" class="form-control" min="1" value="8">
+
+                <!-- 发文计划高级设置【样式统一 + 干净整洁】 -->
+                <div class="form-group" style="margin-top:20px;">
+                    <label class="form-label">📅 发文计划设置</label>
                 </div>
-                <div class="form-group">
-                    <label class="form-label">自动发文间隔（分钟）</label>
-                    <input type="number" id="config_interval" class="form-control" min="5" value="60">
-                </div>
-                <!-- 【新增：发文计划高级设置】 -->
-                <div class="schedule-group">
-                    <div class="schedule-title">📅 发文计划高级设置（自定义时段/条数/间隔）</div>
-                    <div class="schedule-row">
-                        <div class="schedule-col">
-                            <label class="form-label">每日发文区间（最小）</label>
-                            <input type="number" id="cfg_schedule_daily_min" class="form-control" min="1" value="10">
-                        </div>
-                        <div class="schedule-col">
-                            <label class="form-label">每日发文区间（最大）</label>
-                            <input type="number" id="cfg_schedule_daily_max" class="form-control" min="1" value="20">
-                        </div>
-                        <div class="schedule-col">
-                            <label class="form-label">间隔区间（最小分钟）</label>
-                            <input type="number" id="cfg_schedule_interval_min" class="form-control" min="2" value="8">
-                        </div>
-                        <div class="schedule-col">
-                            <label class="form-label">间隔区间（最大分钟）</label>
-                            <input type="number" id="cfg_schedule_interval_max" class="form-control" min="5" value="25">
-                        </div>
+                <div class="grid-row">
+                    <div>
+                        <label class="form-label">每日最小发文数</label>
+                        <input type="number" id="cfg_schedule_daily_min" class="form-control" min="1" value="10">
                     </div>
-                    <div class="schedule-row" style="margin-top:12px;">
-                        <div class="schedule-col">
-                            <label class="form-label">活跃开始时间</label>
-                            <input type="time" class="form-control" id="cfg_schedule_active_start" value="08:00">
-                        </div>
-                        <div class="schedule-col">
-                            <label class="form-label">活跃结束时间</label>
-                            <input type="time" class="form-control" id="cfg_schedule_active_end" value="22:00">
-                        </div>
-                    </div>
-                    <div class="form-text text-muted" style="margin-top:8px;font-size:12px;color:var(--gray);">
-                        说明：设置后，系统会在你指定的时段内、按区间随机发文数量和间隔；支持跨零点时段（如 22:00 - 02:00）
+                    <div>
+                        <label class="form-label">每日最大发文数</label>
+                        <input type="number" id="cfg_schedule_daily_max" class="form-control" min="1" value="20">
                     </div>
                 </div>
-                <!-- 新增结束 -->
-                <button class="btn btn-primary" onclick="saveAccountConfig()" style="width:100%">保存配置</button>
+                <div class="grid-row">
+                    <div>
+                        <label class="form-label">最小间隔(分钟)</label>
+                        <input type="number" id="cfg_schedule_interval_min" class="form-control" min="2" value="8">
+                    </div>
+                    <div>
+                        <label class="form-label">最大间隔(分钟)</label>
+                        <input type="number" id="cfg_schedule_interval_max" class="form-control" min="5" value="25">
+                    </div>
+                </div>
+                <div class="grid-row">
+                    <div>
+                        <label class="form-label">活跃开始时间</label>
+                        <input type="time" class="form-control" id="cfg_schedule_active_start" value="08:00">
+                    </div>
+                    <div>
+                        <label class="form-label">活跃结束时间</label>
+                        <input type="time" class="form-control" id="cfg_schedule_active_end" value="22:00">
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" onclick="saveAccountConfig()" style="width:100%;margin-top:12px;">保存配置</button>
                 <div class="log-box" id="config_log">选择账号后加载配置...</div>
             </div>
             <!-- 发文记录 -->
@@ -510,7 +494,6 @@ UI_TEMPLATE = """
         </div>
     </div>
     <script>
-        // 修复后的JS代码，确保所有函数都定义
         function switchTab(tabId) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -535,7 +518,7 @@ UI_TEMPLATE = """
                         .then(r => r.json())
                         .then(s => {
                             const st = d.running ? `<span style="color:var(--success);">运行中</span>` : `<span style="color:var(--gray);">已停止</span>`;
-                            document.getElementById('auto_account_status').innerHTML = `${st} | 限额:${s.limit} | 间隔:${d.auto_interval}分钟 | 已发:${s.count}(${s.auto_count}/${s.manual_count})`;
+                            document.getElementById('auto_account_status').innerHTML = `${st} | 已发:${s.count}`;
                             document.getElementById('auto_start_btn').disabled = d.running;
                             document.getElementById('auto_stop_btn').disabled = !d.running;
                         });
@@ -574,7 +557,7 @@ UI_TEMPLATE = """
                             fetch(`/api/stats/today?account=${acc}`)
                                 .then(r => r.json())
                                 .then(s => {
-                                    let h = `<div><strong>提示词：</strong>${c.prompt||'无'}</div><div><strong>模型：</strong>${c.model_type}</div><div><strong>限额：</strong>${c.daily_limit}</div><div><strong>间隔：</strong>${c.auto_interval}</div><div><strong>今日：</strong>${s.count}/${s.limit}</div>`;
+                                    let h = `<div><strong>提示词：</strong>${c.prompt||'无'}</div><div><strong>模型：</strong>${c.model_type}</div>`;
                                     document.getElementById('config_detail_content').innerHTML = h;
                                     document.getElementById('account_config_detail').classList.add('active');
                                 });
@@ -582,13 +565,23 @@ UI_TEMPLATE = """
                 });
         }
         
+        // ===================== 【修复：统计显示正确条数】 =====================
         function refreshAutoPage() {
             fetch('/api/auto/refresh')
                 .then(r => r.json())
                 .then(d => {
                     let h = '';
-                    for(const [n,s] of Object.entries(d.today_stats)) {
-                        h += `<div class="stat-card" onclick="showAccountConfig('${n}')"><div class="stat-value">${s.count}</div><div class="stat-label">${n}</div><div class="stat-label">自动:${s.auto_count} 手动:${s.manual_count}</div><div class="stat-label">剩余:${s.remaining}/${s.limit}</div>${s.running?'<div class="stat-label" style="color:var(--success);">运行中</div>':'<div class="stat-label" style="color:var(--gray);">已停止</div>'}</div>`;
+                    for(const acc of d.accounts) {
+                        const s = d.today_stats[acc.name];
+                        const maxLimit = acc.schedule?.daily_max || s.limit;
+                        const remain = Math.max(0, maxLimit - s.count);
+                        h += `<div class="stat-card" onclick="showAccountConfig('${acc.name}')">
+                            <div class="stat-value">${s.count}</div>
+                            <div class="stat-label">${acc.name}</div>
+                            <div class="stat-label">自动:${s.auto_count} 手动:${s.manual_count}</div>
+                            <div class="stat-label">剩余:${remain}/${maxLimit}</div>
+                            ${s.running?'<div class="stat-label" style="color:var(--success);">运行中</div>':'<div class="stat-label" style="color:var(--gray);">已停止</div>'}
+                        </div>`;
                     }
                     document.getElementById('today_stats').innerHTML = h;
                 });
@@ -601,9 +594,6 @@ UI_TEMPLATE = """
                 .then(c => {
                     document.getElementById('config_prompt').value = c.prompt || '';
                     document.getElementById('config_model').value = c.model_type || 'zhipu';
-                    document.getElementById('config_daily_limit').value = c.daily_limit || 8;
-                    document.getElementById('config_interval').value = c.auto_interval || 60;
-                    // 【新增：加载发文计划配置】
                     const s = c.schedule || {};
                     document.getElementById('cfg_schedule_daily_min').value = s.daily_min || 10;
                     document.getElementById('cfg_schedule_daily_max').value = s.daily_max || 20;
@@ -619,9 +609,6 @@ UI_TEMPLATE = """
             const a = document.getElementById('config_account').value;
             const p = document.getElementById('config_prompt').value;
             const m = document.getElementById('config_model').value;
-            const dl = parseInt(document.getElementById('config_daily_limit').value);
-            const ai = parseInt(document.getElementById('config_interval').value);
-            // 【新增：读取发文计划配置】
             const schedule = {
                 daily_min: parseInt(document.getElementById('cfg_schedule_daily_min').value),
                 daily_max: parseInt(document.getElementById('cfg_schedule_daily_max').value),
@@ -634,15 +621,11 @@ UI_TEMPLATE = """
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
                 body: JSON.stringify({
-                    account:a,
-                    prompt:p,
-                    model_type:m,
-                    daily_limit:dl,
-                    auto_interval:ai,
-                    schedule:schedule
+                    account:a, prompt:p, model_type:m,
+                    daily_limit:8, auto_interval:60, schedule:schedule
                 })
             }).then(r => r.json()).then(d => {
-                document.getElementById('config_log').textContent = d.success ? '✅保存成功' : '❌保存失败';
+                document.getElementById('config_log').textContent = '✅保存成功';
                 refreshAutoPage();
             });
         }
@@ -680,13 +663,13 @@ UI_TEMPLATE = """
             const k = document.getElementById('manual_account').value;
             const c = document.getElementById('manual_content').value;
             const s = document.getElementById('manual_symbol').value;
-            const n = document.querySelector(`#manual_account option[value="${k}"]`).dataset.name;
             fetch('/api/manual/post', {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
                 body: JSON.stringify({account_key:k,content:c,symbol:s})
             }).then(r => r.json()).then(d => {
                 document.getElementById('manual_log').textContent = d.success ? '✅发文成功' : '❌发文失败';
+                refreshAutoPage();
             });
         }
         
@@ -730,7 +713,6 @@ UI_TEMPLATE = """
                 });
         }
         
-        // 页面加载初始化
         window.onload = function() {
             refreshAutoPage();
             loadRecords();
@@ -740,7 +722,7 @@ UI_TEMPLATE = """
 </html>
 """
 
-# ======================== 接口 【已修改：支持保存 schedule】 ========================
+# ======================== 接口 ========================
 @app.route('/')
 def index():
     accounts = get_all_accounts()
@@ -801,20 +783,15 @@ def config_load():
         'model_type': acc.get('model_type', 'zhipu'),
         'daily_limit': acc.get('daily_limit', DEFAULT_DAILY_LIMIT),
         'auto_interval': acc.get('auto_interval', DEFAULT_AUTO_INTERVAL),
-        'schedule': acc.get('schedule', {})  # 【新增：返回 schedule 配置】
+        'schedule': acc.get('schedule', {})
     })
 
 @app.route('/api/config/save', methods=['POST'])
 def config_save():
     d = request.json
-    # 【修改：接收并保存 schedule】
     save_account_prompt(
-        d['account'], 
-        d['prompt'], 
-        d['daily_limit'], 
-        d['auto_interval'], 
-        d['model_type'],
-        d.get('schedule')
+        d['account'], d['prompt'], d['daily_limit'], d['auto_interval'],
+        d['model_type'], d.get('schedule')
     )
     return jsonify({'success': True})
 
@@ -844,10 +821,7 @@ def manual_generate_ai():
     from ai_core import generate_content
     api_key = ZHIPU_API_KEY if acc.get('model_type') == 'zhipu' else DEEPSEEK_API_KEY
     c, _ = generate_content(
-        {'text': t},
-        api_key=api_key,
-        model_type=acc.get('model_type', 'zhipu'),
-        custom_prompt=acc.get('prompt', '')
+        {'text': t}, api_key=api_key, model_type=acc.get('model_type', 'zhipu'), custom_prompt=acc.get('prompt', '')
     )
     return c or ''
 
@@ -876,10 +850,8 @@ def records():
     db = load_json(DB_FILE, [])
     res = []
     for r in db:
-        if a and r['account'] != a:
-            continue
-        if d and r['date'] != d:
-            continue
+        if a and r['account'] != a: continue
+        if d and r['date'] != d: continue
         res.append(r)
     return jsonify(res)
 
@@ -890,20 +862,14 @@ def records_export():
     db = load_json(DB_FILE, [])
     res = []
     for r in db:
-        if a and r['account'] != a:
-            continue
-        if d and r['date'] != d:
-            continue
+        if a and r['account'] != a: continue
+        if d and r['date'] != d: continue
         res.append(r)
     def csv_escape(s):
-        if isinstance(s, str):
-            return s.replace('"', '""')
-        return s
+        return s.replace('"', '""') if isinstance(s, str) else s
     csv = '模式,账号,日期,时间,交易对,ID,状态,内容\n'
     for r in res:
-        csv += (
-            f"{csv_escape(r['mode'])},{csv_escape(r['account'])},{csv_escape(r['date'])},{csv_escape(r['time'])},{csv_escape(r['symbol'])},{csv_escape(r['post_id'])},{csv_escape(r['status'])},\"{csv_escape(r['content'])}\"\n"
-        )
+        csv += f"{csv_escape(r['mode'])},{csv_escape(r['account'])},{csv_escape(r['date'])},{csv_escape(r['time'])},{csv_escape(r['symbol'])},{csv_escape(r['post_id'])},{csv_escape(r['status'])},\"{csv_escape(r['content'])}\"\n"
     response = make_response(csv)
     response.headers["Content-Type"] = "text/csv;charset=utf-8"
     response.headers["Content-Disposition"] = "attachment;filename=records.csv"
