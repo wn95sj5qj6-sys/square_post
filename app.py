@@ -196,7 +196,7 @@ def auto_publisher_worker(account_name):
             from ai_core import generate_content
             content, _ = generate_content(
                 topic,
-                api_key=ZHIPU_API_KEY,
+                api_key=ZHIPU_API_KEY if current_acc["model_type"] == "zhipu" else DEEPSEEK_API_KEY,
                 model_type=current_acc["model_type"],
                 custom_prompt=current_acc["prompt"]
             )
@@ -232,7 +232,7 @@ def stop_account_auto_publish(account_name):
         account_running_status[account_name] = False
     return True
 
-# ======================== 网页模板（修复了JS交互） ========================
+# ======================== 网页模板 ========================
 UI_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -754,9 +754,11 @@ def manual_generate_ai():
     k = d['account_key']
     acc = get_account_by_key(k)
     from ai_core import generate_content
+    # 修复：根据模型类型选择对应的 API Key
+    api_key = ZHIPU_API_KEY if acc.get('model_type') == 'zhipu' else DEEPSEEK_API_KEY
     c, _ = generate_content(
         {'text': t},
-        api_key=ZHIPU_API_KEY,
+        api_key=api_key,
         model_type=acc.get('model_type', 'zhipu'),
         custom_prompt=acc.get('prompt', '')
     )
@@ -774,7 +776,12 @@ def manual_post():
     pid = str(pid) if pid else '未知'
     if ok:
         save_post_record('manual', acc['name'], s, c, pid)
-    return jsonify({'success': ok, 'post_id': pid})
+        # 记录手动发文时间
+        cfg = load_json(CONFIG_FILE)
+        cfg[f"{acc['name']}_last_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cfg[f"{acc['name']}_last_manual_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        save_json(CONFIG_FILE, cfg)
+    return jsonify({'success': ok, 'post_id': pid, 'msg': msg})
 
 @app.route('/api/records')
 def records():
@@ -802,9 +809,16 @@ def records_export():
         if d and r['date'] != d:
             continue
         res.append(r)
+    # 处理CSV转义（双引号替换为两个双引号）
+    def csv_escape(s):
+        if isinstance(s, str):
+            return s.replace('"', '""')
+        return s
     csv = '模式,账号,日期,时间,交易对,ID,状态,内容\n'
     for r in res:
-        csv += f"{r['mode']},{r['account']},{r['date']},{r['time']},{r['symbol']},{r['post_id']},{r['status']},\"{r['content']}\"\n"
+        csv += (
+            f"{csv_escape(r['mode'])},{csv_escape(r['account'])},{csv_escape(r['date'])},{csv_escape(r['time'])},{csv_escape(r['symbol'])},{csv_escape(r['post_id'])},{csv_escape(r['status'])},\"{csv_escape(r['content'])}\"\n"
+        )
     response = make_response(csv)
     response.headers["Content-Type"] = "text/csv;charset=utf-8"
     response.headers["Content-Disposition"] = "attachment;filename=records.csv"
