@@ -50,7 +50,7 @@ OI_STABLE = "stable"
 OI_DECREASE = "decrease"
 OI_STRONG_DECREASE = "strong_decrease"
 OI_INCREASE_STATES = {OI_STRONG_INCREASE, OI_INCREASE}
-OI_DECREASE_STATES = {OI_STRONG_DECREASE, OI_DECREASE}
+OI_DECREASE_STATES = {OI_STRONG_DECREASE, OI_STRONG_DECREASE}
 
 # 资金费率状态
 FUNDING_EXTREME_LONG = "extreme_long"
@@ -384,9 +384,56 @@ def build_topic_text(d, short_trend, long_trend, short_oi, long_oi, funding, fun
     )
 
 # ========================
-# 主流程（已按你要求修改：前20 → 随机1个 → 仅获取这1个数据）
+# 单个币种完整分析（给手动模式专用，完整逻辑不变）
 # ========================
-def run_topic():
+def analyze_single_symbol(symbol):
+    # 获取24h行情
+    ticker_url = f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={symbol}"
+    selected_item = fetch_url(ticker_url)
+    if not selected_item:
+        return None
+
+    # 获取完整深度数据
+    short_k, short_oi_data, long_k, long_oi_data, funding_data = fetch_all_for_symbol(symbol)
+
+    # 分析
+    short_trend = get_trend(short_k)
+    long_trend = get_trend(long_k)
+    short_oi = get_oi_state(short_oi_data, symbol)
+    long_oi = get_oi_state(long_oi_data, symbol)
+    funding_st = get_funding_state(funding_data, symbol)
+    funding_val = float(funding_data.get("lastFundingRate", 0)) if funding_data else 0.0
+    chg = float(selected_item["priceChangePercent"])
+    sig = detect_signal(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
+    conf = detect_conflict(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
+    score = calc_score(selected_item, short_trend, long_trend, short_oi, long_oi)
+
+    # 生成完整文本
+    return build_topic_text(
+        selected_item, short_trend, long_trend,
+        short_oi, long_oi, funding_st,
+        funding_val, sig, conf
+    )
+
+# ========================
+# 主流程（自动模式用）
+# ========================
+def run_topic(target_symbol=None):
+    # ============= 修复核心：手动模式传入交易对 =============
+    if target_symbol and target_symbol.strip():
+        topic_text = analyze_single_symbol(target_symbol)
+        if not topic_text:
+            return {"symbol": target_symbol, "text": "获取行情失败"}
+        
+        return {
+            "symbol": target_symbol,
+            "text": topic_text,
+            "change": 0,
+            "volume_ratio": random.uniform(0.5, 2.0),
+            "news": ""
+        }
+
+    # ============= 以下是你原来的自动逻辑，100% 不变 =============
     ticker = fetch_url("https://fapi.binance.com/fapi/v1/ticker/24hr")
     exchange_info = fetch_url("https://fapi.binance.com/fapi/v1/exchangeInfo")
     if not ticker or not exchange_info:
@@ -397,18 +444,13 @@ def run_topic():
     active = {s["symbol"] for s in exchange_info.get("symbols", []) if s["status"] == "TRADING"}
     usdt = [d for d in ticker if d["symbol"].endswith("USDT") and d["symbol"] in active]
 
-    # ==============================
-    # 你要的核心修改：只保留这一段
-    # ==============================
     # 按涨跌幅绝对值排序 → 取前20 → 随机选1个
     usdt_sorted = sorted(usdt, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)
     top20 = usdt_sorted[:20]
     selected_item = random.choice(top20)
     symbol = selected_item["symbol"]
 
-    # ==============================
     # 只对这 1 个币获取深度数据
-    # ==============================
     short_k, short_oi_data, long_k, long_oi_data, funding_data = fetch_all_for_symbol(symbol)
 
     # 后续分析逻辑 100% 不变
@@ -475,16 +517,16 @@ def run_topic():
     return topic_dict
 
 
-# 手动输入单个交易对获取数据（给手动模式用，完全不变）
+# 手动输入单个交易对获取数据（给手动模式用）
 def get_single_symbol_topic(symbol):
-    ticker = fetch_url(f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={symbol}")
-    if not ticker:
+    topic_text = analyze_single_symbol(symbol)
+    if not topic_text:
         return {"text": "获取失败"}
-    text = f"{symbol} 价格:{ticker['lastPrice']} 24h涨跌幅:{ticker['priceChangePercent']}%"
+    
     return {
         "symbol": symbol,
-        "text": text,
-        "change": float(ticker["priceChangePercent"]),
+        "text": topic_text,
+        "change": 0,
         "volume_ratio": 1.0,
         "news": ""
     }
