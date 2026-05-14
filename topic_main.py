@@ -109,8 +109,10 @@ def fetch_all_for_symbol(symbol):
     )
 
 def get_trend(k_data):
-    if len(k_data) < 6:
-        return TREND_RANGE
+    # 👇 只加这一行，修复 NoneType 崩溃
+    if k_data is None or len(k_data) < 6:
+        return "震荡"
+
     closes = [float(i[4]) for i in k_data]
     highs = [float(i[2]) for i in k_data]
     lows = [float(i[3]) for i in k_data]
@@ -119,21 +121,21 @@ def get_trend(k_data):
     change_pct = (last_close - first_close) / first_close * 100
     higher_highs = highs[-1] > max(highs[:-1])
     lower_lows = lows[-1] < min(lows[:-1])
-    recent_chg = (closes[-1] - closes[-4]) / closes[-4] * 100 if len(closes)>=4 else 0
+    recent_chg = (closes[-1] - closes[-4]) / closes[-4] * 100 if len(closes) >= 4 else 0
 
     if change_pct > 15:
-        return TREND_STRONG_UP
+        return "强势上涨"
     if change_pct < -15:
-        return TREND_STRONG_DOWN
+        return "强势下跌"
     if change_pct > 2 and higher_highs:
-        return TREND_WEAK_UP
+        return "弱势上涨"
     if change_pct < -2 and lower_lows:
-        return TREND_WEAK_DOWN
+        return "弱势下跌"
     if recent_chg > 3:
-        return TREND_WEAK_UP
+        return "弱势上涨"
     if recent_chg < -3:
-        return TREND_WEAK_DOWN
-    return TREND_RANGE
+        return "弱势下跌"
+    return "震荡"
 
 def get_oi_state(oi_data, symbol):
     if len(oi_data) < 2:
