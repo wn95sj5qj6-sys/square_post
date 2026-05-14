@@ -728,10 +728,15 @@ def config_save():
 
 @app.route('/api/manual/auto_symbol')
 def manual_auto_symbol():
-    # 保持不变，还是返回热门交易对
-    from topic_main import get_top_symbols
-    symbols = get_top_symbols()
-    return jsonify({'success': True, 'symbol': symbols[0] if symbols else "BTCUSDT"})
+    # 修复：自动选一个热门交易对，不依赖不存在的 get_top_symbols
+    try:
+        from topic_main import run_topic
+        # 调用 run_topic 自动获取一个热门币
+        topic = run_topic()
+        symbol = topic.get("symbol", "BTCUSDT")
+        return jsonify({'success': True, 'symbol': symbol})
+    except:
+        return jsonify({'success': True, 'symbol': "BTCUSDT"})
 
 @app.route('/api/manual/full_topic')
 def manual_full_topic():
