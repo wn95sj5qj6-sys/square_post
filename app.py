@@ -934,11 +934,15 @@ UI_TEMPLATE = """
             fetch('/api/auto/refresh')
                 .then(res => res.json())
                 .then(data => {
-                    // 更新统计卡片
-                    let statsHtml = '';
+                    // 重新加载统计卡片
+                    const statsGrid = document.getElementById('today_stats');
+                    statsGrid.innerHTML = '';
                     for (const [accName, stat] of Object.entries(data.today_stats)) {
-                        statsHtml += `
-                        <div class="stat-card" id="stat_${accName}" onclick="showAccountConfig('${accName}')">
+                        const card = document.createElement('div');
+                        card.className = 'stat-card';
+                        card.id = `stat_${accName}`;
+                        card.onclick = () => showAccountConfig(accName);
+                        card.innerHTML = `
                             <div class="stat-value">${stat.count}</div>
                             <div class="stat-label">${accName}</div>
                             <div class="stat-label">自动: ${stat.auto_count} | 手动: ${stat.manual_count}</div>
@@ -947,180 +951,72 @@ UI_TEMPLATE = """
                                 '<div class="stat-label" style="color: var(--success);">运行中</div>' : 
                                 '<div class="stat-label" style="color: var(--gray);">已停止</div>'
                             }
-                        </div>
                         `;
+                        statsGrid.appendChild(card);
                     }
-                    document.getElementById('today_stats').innerHTML = statsHtml;
                     
-                    // 更新手动模式账号选项
-                    document.querySelectorAll('#manual_account option').forEach(option => {
-                        const accName = option.dataset.name;
-                        if (accName && data.today_stats[accName]) {
-                            option.textContent = `${accName} (今日剩余: ${data.today_stats[accName].remaining}/${data.today_stats[accName].limit})`;
+                    // 刷新下拉账号列表
+                    const selector = document.getElementById('auto_account_selector');
+                    const currentValue = selector.value;
+                    selector.innerHTML = '<option value="">请选择账号</option>';
+                    data.accounts.forEach(acc => {
+                        const option = document.createElement('option');
+                        option.value = acc.name;
+                        option.textContent = acc.name;
+                        if (currentValue === acc.name) {
+                            option.selected = true;
                         }
+                        selector.appendChild(option);
                     });
-                });
-        }
-        
-        // ======================== 手动模式相关（修复返回值） ========================
-        function autoSelectSymbol() {
-            const logEl = document.getElementById('manual_log');
-            logEl.textContent = '正在自动筛选交易对...';
-            
-            fetch('/api/manual/auto_symbol')
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        document.getElementById('manual_symbol').value = data.symbol;
-                        logEl.textContent = `✅ 自动选中：${data.symbol}`;
-                    } else {
-                        logEl.textContent = `❌ 筛选失败：${data.msg}`;
-                    }
-                });
-        }
-        
-        function generateFullTopic() {
-            const symbol = document.getElementById('manual_symbol').value.trim().toUpperCase();
-            const logEl = document.getElementById('manual_log');
-            
-            if (!symbol) {
-                logEl.textContent = '❌ 请先输入或选择交易对';
-                return;
-            }
-            
-            logEl.textContent = '正在生成完整分析，请稍候...';
-            
-            fetch(`/api/manual/full_topic?symbol=${symbol}`)
-                .then(res => res.json())
-                .then(data => {
-                    if (data.success) {
-                        document.getElementById('manual_topic').value = data.topic;
-                        logEl.textContent = '✅ 完整分析生成成功！';
-                    } else {
-                        document.getElementById('manual_topic').value = '';
-                        logEl.textContent = `❌ 生成失败：${data.msg}`;
-                    }
-                });
-        }
-        
-        function generateAIContent() {
-            const topic = document.getElementById('manual_topic').value.trim();
-            const accountKey = document.getElementById('manual_account').value;
-            const logEl = document.getElementById('manual_log');
-            
-            if (!topic) {
-                logEl.textContent = '❌ 请先生成完整分析内容';
-                return;
-            }
-            
-            logEl.textContent = 'AI正在创作内容，请稍候...';
-            
-            fetch('/api/manual/generate_ai', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    topic: topic,
-                    account_key: accountKey
-                })
-            })
-            .then(res => res.text())
-            .then(content => {
-                if (content) {
-                    document.getElementById('manual_content').value = content;
-                    logEl.textContent = '✅ AI内容生成成功！';
-                } else {
-                    logEl.textContent = '❌ AI内容生成失败';
-                }
-            });
-        }
-        
-        function submitPost() {
-            const accountKey = document.getElementById('manual_account').value;
-            const content = document.getElementById('manual_content').value.trim();
-            const accountName = document.querySelector(`#manual_account option[value="${accountKey}"]`).dataset.name;
-            const symbol = document.getElementById('manual_symbol').value.trim() || '手动输入';
-            const logEl = document.getElementById('manual_log');
-            
-            if (!content) {
-                logEl.textContent = '❌ 请先生成发文内容';
-                return;
-            }
-            
-            fetch(`/api/stats/today?account=${accountName}`)
-                .then(res => res.json())
-                .then(stat => {
-                    if (stat.count >= stat.limit) {
-                        logEl.textContent = `❌ 账号 ${accountName} 今日已达发文限额 ${stat.limit} 条`;
-                        return;
-                    }
                     
-                    logEl.textContent = '正在发布内容，请稍候...';
-                    
-                    fetch('/api/manual/post', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            account_key: accountKey,
-                            content: content,
-                            symbol: symbol
-                        })
-                    })
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data.success) {
-                            // 修复：显示正常的post_id，而非[object Object]
-                            logEl.textContent = `✅ 发文成功！ID：${data.post_id || '未知'}`;
-                            document.getElementById('manual_content').value = '';
-                            refreshAutoPage();
-                            
-                            // 更新最后手动运行时间
-                            fetch(`/api/auto/update_last_manual?account=${accountName}`);
-                        } else {
-                            logEl.textContent = `❌ 发文失败：${data.msg}`;
-                        }
-                    });
+                    // 如果当前有选中账号，重新加载状态
+                    if (currentValue) {
+                        loadAccountStatus();
+                    }
                 });
         }
         
-        // ======================== 账号配置相关 ========================
+        // ======================== 账号配置 ========================
         function loadAccountConfig() {
             const accountName = document.getElementById('config_account').value;
-            const logEl = document.getElementById('config_log');
-            
-            logEl.textContent = '正在加载账号配置...';
+            if (!accountName) return;
             
             fetch(`/api/config/load?account=${accountName}`)
                 .then(res => res.json())
                 .then(config => {
                     document.getElementById('config_prompt').value = config.prompt || '';
-                    document.getElementById('config_daily_limit').value = config.daily_limit || 8;
-                    document.getElementById('config_interval').value = config.auto_interval || 60;
-                    logEl.textContent = '✅ 配置加载成功';
+                    document.getElementById('config_daily_limit').value = config.daily_limit || DEFAULT_DAILY_LIMIT;
+                    document.getElementById('config_interval').value = config.auto_interval || DEFAULT_AUTO_INTERVAL;
+                    document.getElementById('config_log').textContent = `已加载账号 ${accountName} 的配置`;
                 });
         }
         
         function saveAccountConfig() {
             const accountName = document.getElementById('config_account').value;
+            if (!accountName) {
+                alert('请选择要配置的账号');
+                return;
+            }
+            
             const prompt = document.getElementById('config_prompt').value;
             const dailyLimit = document.getElementById('config_daily_limit').value;
             const interval = document.getElementById('config_interval').value;
-            const logEl = document.getElementById('config_log');
             
-            if (!dailyLimit || dailyLimit < 1) {
-                logEl.textContent = '❌ 每日限额必须大于0';
+            if (!dailyLimit || isNaN(dailyLimit) || dailyLimit < 1) {
+                alert('每日限额必须是大于0的数字');
                 return;
             }
             
-            if (!interval || interval < 5) {
-                logEl.textContent = '❌ 发文间隔不能小于5分钟';
+            if (!interval || isNaN(interval) || interval < 5) {
+                alert('自动间隔必须是大于等于5的数字');
                 return;
             }
-            
-            logEl.textContent = '正在保存配置...';
             
             fetch('/api/config/save', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json'
+                },
                 body: JSON.stringify({
                     account: accountName,
                     prompt: prompt,
@@ -1131,398 +1027,261 @@ UI_TEMPLATE = """
             .then(res => res.json())
             .then(data => {
                 if (data.success) {
-                    logEl.textContent = '✅ 配置保存成功！';
+                    document.getElementById('config_log').textContent = `✅ 账号 ${accountName} 配置保存成功`;
+                    // 刷新自动页面统计
                     refreshAutoPage();
                 } else {
-                    logEl.textContent = `❌ 保存失败：${data.msg}`;
+                    document.getElementById('config_log').textContent = `❌ 保存失败：${data.msg}`;
                 }
             });
         }
         
-        // ======================== 记录查询&导出&删除 ========================
-        function loadRecords() {
-            const account = document.getElementById('record_account').value;
-            const date = document.getElementById('record_date').value;
-            const listEl = document.getElementById('records_list');
-            
-            listEl.innerHTML = '正在加载记录...';
-            
-            fetch(`/api/records?account=${account}&date=${date}`)
+        // ======================== 手动模式 ========================
+        function autoSelectSymbol() {
+            fetch('/api/topic/auto_symbol')
                 .then(res => res.json())
-                .then(records => {
-                    if (records.length === 0) {
-                        listEl.innerHTML = '暂无记录';
-                        return;
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('manual_symbol').value = data.symbol;
+                        document.getElementById('manual_log').textContent = `已自动选择交易对：${data.symbol}`;
+                    } else {
+                        document.getElementById('manual_log').textContent = `自动选择失败：${data.msg}`;
                     }
-                    
-                    let html = '';
-                    records.forEach(record => {
-                        html += `
-                        <div class="record-item">
-                            <div class="record-header">
-                                <span class="record-symbol">${record.symbol}</span>
-                                <span>${record.mode === 'auto' ? '自动' : '手动'} | ${record.account}</span>
-                                <span class="record-time">${record.time}</span>
-                            </div>
-                            <div class="record-content">${record.content}</div>
-                            <div style="font-size: 12px; color: var(--gray); margin-top: 4px;">ID：${record.post_id || '未知'}</div>
-                        </div>
-                        `;
-                    });
-                    listEl.innerHTML = html;
                 });
         }
         
-        // 修复：导出功能（解决文件名编码问题）
+        function generateFullTopic() {
+            const symbol = document.getElementById('manual_symbol').value.trim();
+            if (!symbol) {
+                alert('请先输入或自动选择交易对');
+                return;
+            }
+            
+            document.getElementById('manual_log').textContent = '正在生成话题分析...';
+            
+            fetch(`/api/topic/generate?symbol=${symbol}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('manual_topic').value = JSON.stringify(data.topic, null, 2);
+                        document.getElementById('manual_log').textContent = '✅ 话题分析生成完成';
+                    } else {
+                        document.getElementById('manual_log').textContent = `❌ 生成失败：${data.msg}`;
+                    }
+                });
+        }
+        
+        function generateAIContent() {
+            const topicStr = document.getElementById('manual_topic').value.trim();
+            if (!topicStr) {
+                alert('请先生成话题分析');
+                return;
+            }
+            
+            let topic;
+            try {
+                topic = JSON.parse(topicStr);
+            } catch (e) {
+                alert('话题分析格式错误，请确保是有效的JSON');
+                return;
+            }
+            
+            // 获取选中账号的提示词
+            const accountKey = document.getElementById('manual_account').value;
+            const accountName = document.querySelector(`#manual_account option[value="${accountKey}"]`).dataset.name;
+            
+            document.getElementById('manual_log').textContent = '正在生成AI发文内容...';
+            
+            fetch('/api/ai/generate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    topic: topic,
+                    account_name: accountName
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('manual_content').value = data.content;
+                    document.getElementById('manual_log').textContent = '✅ AI内容生成完成';
+                } else {
+                    document.getElementById('manual_log').textContent = `❌ 生成失败：${data.msg}`;
+                }
+            });
+        }
+        
+        function submitPost() {
+            const accountKey = document.getElementById('manual_account').value;
+            const content = document.getElementById('manual_content').value.trim();
+            const symbol = document.getElementById('manual_symbol').value.trim();
+            const accountName = document.querySelector(`#manual_account option[value="${accountKey}"]`).dataset.name;
+            
+            if (!content) {
+                alert('请先生成发文内容');
+                return;
+            }
+            
+            // 检查今日限额
+            fetch(`/api/stats/today?account=${accountName}`)
+                .then(res => res.json())
+                .then(stat => {
+                    if (stat.count >= stat.limit) {
+                        alert(`账号 ${accountName} 今日已达发文限额 ${stat.limit} 条，无法继续发文`);
+                        return;
+                    }
+                    
+                    document.getElementById('manual_log').textContent = '正在发布内容...';
+                    
+                    fetch('/api/post/manual', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            account_key: accountKey,
+                            account_name: accountName,
+                            symbol: symbol,
+                            content: content
+                        })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            document.getElementById('manual_log').textContent = `✅ 发布成功！Post ID：${data.post_id}`;
+                            // 刷新统计
+                            refreshAutoPage();
+                            // 清空内容
+                            document.getElementById('manual_content').value = '';
+                        } else {
+                            document.getElementById('manual_log').textContent = `❌ 发布失败：${data.msg}`;
+                        }
+                    });
+                });
+        }
+        
+        // ======================== 记录管理 ========================
+        function loadRecords() {
+            const account = document.getElementById('record_account').value;
+            const date = document.getElementById('record_date').value;
+            
+            fetch(`/api/records/load?account=${account}&date=${date}`)
+                .then(res => res.json())
+                .then(data => {
+                    const recordsList = document.getElementById('records_list');
+                    recordsList.innerHTML = '';
+                    
+                    if (data.records.length === 0) {
+                        recordsList.innerHTML = '<div style="text-align: center; color: var(--gray); padding: 20px;">暂无记录</div>';
+                        return;
+                    }
+                    
+                    data.records.forEach(record => {
+                        const recordItem = document.createElement('div');
+                        recordItem.className = 'record-item';
+                        recordItem.innerHTML = `
+                            <div class="record-header">
+                                <span class="record-symbol">${record.symbol || '未知'}</span>
+                                <span>${record.account}</span>
+                                <span class="record-time">${record.time} (${record.mode === 'auto' ? '自动' : '手动'})</span>
+                                <span style="color: ${record.status === 'success' ? 'var(--success)' : 'var(--danger)'}">
+                                    ${record.status === 'success' ? '成功' : '失败'}
+                                </span>
+                            </div>
+                            <div class="record-content">${record.content}</div>
+                            <div style="margin-top: 8px; font-size: 12px; color: var(--gray);">
+                                Post ID: ${record.post_id || '未知'}
+                            </div>
+                        `;
+                        recordsList.appendChild(recordItem);
+                    });
+                });
+        }
+        
         function exportRecords() {
             const account = document.getElementById('record_account').value;
             const date = document.getElementById('record_date').value;
-            const url = `/api/records/export?account=${encodeURIComponent(account)}&date=${encodeURIComponent(date)}`;
-            window.open(url);
+            
+            fetch(`/api/records/export?account=${account}&date=${date}`)
+                .then(res => res.blob())
+                .then(blob => {
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `发文记录_${account || '所有账号'}_${date || '全部日期'}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                });
         }
         
-        // 新增：删除选中记录
+        // ======================== 删除记录 ========================
         function deleteSelectedRecords() {
             const account = document.getElementById('delete_account').value;
             const date = document.getElementById('delete_date').value;
             
             if (!account && !date) {
-                document.getElementById('delete_log').textContent = '❌ 请选择要删除的账号或日期';
+                alert('请选择要删除的账号或日期');
                 return;
             }
             
-            if (!confirm('确定要删除选中的记录吗？删除后无法恢复！')) {
+            if (!confirm(`确认删除${account ? '账号[' + account + ']' : '所有账号'}${date ? '日期[' + date + ']' : '所有日期'}的记录？删除后无法恢复！`)) {
                 return;
             }
             
-            fetch(`/api/records/delete?account=${encodeURIComponent(account)}&date=${encodeURIComponent(date)}`, {
-                method: 'POST'
+            fetch('/api/records/delete', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    account: account,
+                    date: date,
+                    all_records: false
+                })
             })
             .then(res => res.json())
             .then(data => {
-                document.getElementById('delete_log').textContent = `✅ 成功删除 ${data.deleted_count} 条记录`;
-                loadRecords(); // 重新加载记录
-                refreshAutoPage(); // 刷新统计
+                if (data.success) {
+                    document.getElementById('delete_log').textContent = `✅ 成功删除 ${data.deleted_count} 条记录`;
+                    // 刷新记录列表
+                    loadRecords();
+                } else {
+                    document.getElementById('delete_log').textContent = `❌ 删除失败：${data.msg}`;
+                }
             });
         }
         
-        // 新增：删除所有记录
         function deleteAllRecords() {
-            if (!confirm('确定要删除所有记录吗？此操作不可恢复！')) {
+            if (!confirm('确认删除所有发文记录？此操作不可逆！')) {
                 return;
             }
             
-            fetch('/api/records/delete?all=true', {
-                method: 'POST'
+            fetch('/api/records/delete', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    all_records: true
+                })
             })
             .then(res => res.json())
             .then(data => {
-                document.getElementById('delete_log').textContent = `✅ 成功删除 ${data.deleted_count} 条记录`;
-                loadRecords(); // 重新加载记录
-                refreshAutoPage(); // 刷新统计
+                if (data.success) {
+                    document.getElementById('delete_log').textContent = `✅ 成功删除所有 ${data.deleted_count} 条记录`;
+                    // 刷新记录列表
+                    loadRecords();
+                } else {
+                    document.getElementById('delete_log').textContent = `❌ 删除失败：${data.msg}`;
+                }
             });
         }
         
-        // 页面加载初始化
+        // ======================== API接口 ========================
+        // 页面加载完成后初始化
         window.onload = function() {
-            refreshAutoPage();
-            const today = new Date().toISOString().split('T')[0];
-            document.getElementById('record_date').value = today;
-            document.getElementById('delete_date').value = today;
-        };
-    </script>
-</body>
-</html>
-"""
-
-# ======================== 接口修复&新增 ========================
-@app.route('/')
-def index():
-    accounts = get_all_accounts()
-    today_stats = get_today_stats()
-    today = str(datetime.date.today())
-    
-    return render_template_string(
-        UI_TEMPLATE,
-        accounts=accounts,
-        today_stats=today_stats,
-        today=today
-    )
-
-# 多账号启停接口
-@app.route('/api/auto/start')
-def auto_start():
-    account_name = request.args.get("account", "")
-    if not account_name:
-        return jsonify({"success": False, "msg": "请指定账号名称"})
-    
-    if not get_account_by_name(account_name):
-        return jsonify({"success": False, "msg": "账号不存在"})
-    
-    # 启动账号自动发文
-    success = start_account_auto_publish(account_name)
-    if success:
-        return jsonify({"success": True, "msg": f"账号 {account_name} 启动成功"})
-    else:
-        return jsonify({"success": False, "msg": f"账号 {account_name} 已在运行中"})
-
-@app.route('/api/auto/stop')
-def auto_stop():
-    account_name = request.args.get("account", "")
-    if not account_name:
-        return jsonify({"success": False, "msg": "请指定账号名称"})
-    
-    # 停止账号自动发文
-    stop_account_auto_publish(account_name)
-    return jsonify({"success": True, "msg": f"账号 {account_name} 已停止"})
-
-# 修复：获取账号最后运行时间（区分自动/手动）
-@app.route('/api/auto/last_run')
-def auto_last_run():
-    account_name = request.args.get("account", "")
-    cfg = load_json(CONFIG_FILE)
-    return jsonify({
-        "last_run": cfg.get(f"{account_name}_last_run", ""),
-        "last_auto_run": cfg.get(f"{account_name}_last_auto_run", ""),
-        "last_manual_run": cfg.get(f"{account_name}_last_manual_run", "")
-    })
-
-# 新增：更新最后手动运行时间
-@app.route('/api/auto/update_last_manual')
-def update_last_manual():
-    account_name = request.args.get("account", "")
-    if account_name:
-        cfg = load_json(CONFIG_FILE)
-        cfg[f"{account_name}_last_manual_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cfg[f"{account_name}_last_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        save_json(CONFIG_FILE, cfg)
-    return jsonify({"success": True})
-
-# 刷新自动模式页面数据
-@app.route('/api/auto/refresh')
-def auto_refresh():
-    accounts = get_all_accounts()
-    today_stats = get_today_stats()
-    return jsonify({
-        "accounts": accounts,
-        "today_stats": today_stats
-    })
-
-@app.route('/api/auto/status')
-def auto_status():
-    account_name = request.args.get("account", "")
-    current_acc = get_account_by_name(account_name) or {}
-    cfg = load_json(CONFIG_FILE)
-    
-    return jsonify({
-        "running": current_acc.get("running", False),
-        "auto_interval": current_acc.get("auto_interval", DEFAULT_AUTO_INTERVAL),
-        "daily_limit": current_acc.get("daily_limit", DEFAULT_DAILY_LIMIT),
-        "last_run_time": cfg.get(f"{account_name}_last_run", "")
-    })
-
-@app.route('/api/stats/today')
-def today_stats_api():
-    account = request.args.get("account", "")
-    if account:
-        return jsonify(get_today_stats(account))
-    return jsonify(get_today_stats())
-
-@app.route('/api/manual/auto_symbol')
-def manual_auto_symbol():
-    try:
-        from topic_main import run_topic
-        topic = run_topic()
-        if not topic:
-            return jsonify({"success": False, "msg": "未筛选到合适的交易对"})
-        return jsonify({"success": True, "symbol": topic.get("symbol", "")})
-    except Exception as e:
-        return jsonify({"success": False, "msg": str(e)})
-
-@app.route('/api/manual/full_topic')
-def manual_full_topic():
-    try:
-        from topic_main import fetch_url, fetch_all_for_symbol, get_trend, get_oi_state, get_funding_state, detect_signal, detect_conflict, build_topic_text
-        symbol = request.args.get("symbol", "").strip().upper()
-        if not symbol:
-            return jsonify({"success": False, "msg": "交易对不能为空"})
-        
-        ticker = fetch_url(f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={symbol}")
-        if not ticker:
-            return jsonify({"success": False, "msg": "获取基础行情失败"})
-        
-        short_k, short_oi_data, long_k, long_oi_data, funding_data = fetch_all_for_symbol(symbol)
-        short_trend = get_trend(short_k)
-        long_trend = get_trend(long_k)
-        short_oi = get_oi_state(short_oi_data, symbol)
-        long_oi = get_oi_state(long_oi_data, symbol)
-        funding_st = get_funding_state(funding_data, symbol)
-        funding_val = float(funding_data.get("lastFundingRate", 0)) if funding_data else 0.0
-        chg = float(ticker["priceChangePercent"])
-        sig = detect_signal(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
-        conf = detect_conflict(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
-        
-        topic_text = build_topic_text(ticker, short_trend, long_trend, short_oi, long_oi, funding_st, funding_val, sig, conf)
-        return jsonify({"success": True, "topic": topic_text, "symbol": symbol})
-    except Exception as e:
-        return jsonify({"success": False, "msg": str(e)})
-
-@app.route('/api/manual/generate_ai', methods=['POST'])
-def manual_generate_ai():
-    data = request.json
-    topic = data.get("topic", "")
-    account_key = data.get("account_key", "")
-    
-    if not topic or not account_key:
-        return ""
-    
-    account = get_account_by_key(account_key)
-    custom_prompt = account.get("prompt", "") if account else ""
-    
-    from ai_core import generate_content
-    fake_topic = {"text": topic, "symbol": "", "change": 0}
-    content, _ = generate_content(fake_topic, ZHIPU_API_KEY, custom_prompt=custom_prompt)
-    
-    return content or ""
-
-# 修复：手动发文返回值异常
-@app.route('/api/manual/post', methods=['POST'])
-def manual_post():
-    try:
-        data = request.json
-        account_key = data.get("account_key", "")
-        content = data.get("content", "")
-        symbol = data.get("symbol", "手动")
-        
-        if not account_key or not content:
-            return jsonify({"success": False, "msg": "参数缺失"})
-        
-        account = get_account_by_key(account_key)
-        if not account:
-            return jsonify({"success": False, "msg": "账号不存在"})
-        
-        today_stats = get_today_stats(account["name"])
-        if today_stats["count"] >= today_stats["limit"]:
-            return jsonify({"success": False, "msg": f"今日已达发文限额 {today_stats['limit']} 条"})
-        
-        from post_main import post_content
-        ok, msg, post_id = post_content(content, account_key)
-        
-        # 修复：确保post_id是字符串，避免[object Object]
-        post_id_str = str(post_id) if post_id and post_id != "[object Object]" else "未知ID"
-        
-        if ok:
-            save_post_record("manual", account["name"], symbol, content, post_id_str)
-            # 更新最后手动运行时间
-            cfg = load_json(CONFIG_FILE)
-            cfg[f"{account['name']}_last_manual_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cfg[f"{account['name']}_last_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            save_json(CONFIG_FILE, cfg)
-            
-            return jsonify({"success": True, "post_id": post_id_str, "msg": "发文成功"})
-        else:
-            return jsonify({"success": False, "msg": msg, "post_id": post_id_str})
-    except Exception as e:
-        return jsonify({"success": False, "msg": str(e), "post_id": "未知ID"})
-
-@app.route('/api/config/load')
-def load_config_api():
-    account_name = request.args.get("account", "")
-    account = get_account_by_name(account_name) or {}
-    return jsonify({
-        "prompt": account.get("prompt", ""),
-        "daily_limit": account.get("daily_limit", DEFAULT_DAILY_LIMIT),
-        "auto_interval": account.get("auto_interval", DEFAULT_AUTO_INTERVAL)
-    })
-
-@app.route('/api/config/save', methods=['POST'])
-def save_config_api():
-    try:
-        data = request.json
-        account_name = data.get("account", "")
-        prompt = data.get("prompt", "")
-        daily_limit = data.get("daily_limit", DEFAULT_DAILY_LIMIT)
-        auto_interval = data.get("auto_interval", DEFAULT_AUTO_INTERVAL)
-        
-        if not account_name:
-            return jsonify({"success": False, "msg": "账号名称不能为空"})
-        
-        save_account_prompt(account_name, prompt, daily_limit, auto_interval)
-        return jsonify({"success": True, "msg": "配置保存成功"})
-    except Exception as e:
-        return jsonify({"success": False, "msg": str(e)})
-
-@app.route('/api/records')
-def get_records():
-    account = request.args.get("account", "")
-    date = request.args.get("date", "")
-    db = load_json(DB_FILE, [])
-    
-    records = []
-    for record in db:
-        if account and record.get("account") != account:
-            continue
-        if date and record.get("date") != date:
-            continue
-        records.append(record)
-    
-    records.sort(key=lambda x: x["time"], reverse=True)
-    return jsonify(records)
-
-# 修复：导出功能（解决HTTP Header错误+文件名编码）
-@app.route('/api/records/export')
-def export_records():
-    account = request.args.get("account", "")
-    date = request.args.get("date", "")
-    db = load_json(DB_FILE, [])
-    
-    # 筛选需要导出的记录
-    export_records = []
-    for record in db:
-        if account and record.get("account") != account:
-            continue
-        if date and record.get("date") != date:
-            continue
-        export_records.append(record)
-    
-    # 生成CSV内容
-    csv = "\ufeff模式,账号,日期,时间,交易对,文章ID,状态,内容\n"
-    for record in export_records:
-        content = record.get("content", "").replace('"', '""')
-        csv += (
-            f"{record.get('mode','')},"
-            f"{record.get('account','')},"
-            f"{record.get('date','')},"
-            f"{record.get('time','')},"
-            f"{record.get('symbol','')},"
-            f"{record.get('post_id','')},"
-            f"{record.get('status','')},"
-            f'"{content}"\n'
-        )
-    
-    # 修复：正确设置Header，解决Invalid HTTP Header错误
-    filename = f"发文记录_{datetime.date.today()}.csv"
-    # 编码文件名，避免中文乱码和Header错误
-    encoded_filename = urllib.parse.quote(filename)
-    
-    response = make_response(csv)
-    response.headers["Content-Type"] = "text/csv; charset=utf-8"
-    response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
-    
-    return response
-
-# 新增：删除记录接口
-@app.route('/api/records/delete', methods=['POST'])
-def delete_records_api():
-    try:
-        account = request.args.get("account", "")
-        date = request.args.get("date", "")
-        all_records = request.args.get("all", "").lower() == "true"
-        
-        deleted_count = delete_records(account=account, date=date, all_records=all_records)
-        return jsonify({"success": True, "deleted_count": deleted_count})
-    except Exception as e:
-        return jsonify({"success": False, "msg": str(e), "deleted_count": 0})
-
-if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000, debug=False)
+            //
