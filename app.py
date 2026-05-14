@@ -603,28 +603,31 @@ def api_publish():
     d = request.json
     a = d['account']
     c = d['content']
-    binance_key = next((x['key'] for x in BINANCE_ACCOUNTS if x['name']==a), None)
+    binance_key = next((x['key'] for x in BINANCE_ACCOUNTS if x['name'] == a), None)
     from post_main import post_to_binance
-    
-    # 获取币安完整返回值
-    binance_response = post_to_binance(c, binance_key)
-    
-    # 记录日志
+
+    # 👇 修复：严格接收 3 个返回值
+    success, msg, post_id = post_to_binance(c, binance_key)
+
     record = {
         "date": get_today_date(),
         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "account": a,
         "symbol": "手动",
         "content": c,
-        "post_id": binance_response.get("data", {}).get("postId"),
+        "post_id": post_id,
         "mode": "manual",
-        "status": "success" if binance_response.get("success") else "fail",
-        "msg": binance_response.get("message") or binance_response.get("msg")
+        "status": "success" if success else "fail",
+        "msg": msg
     }
     save_record(record)
-    
-    # 直接返回币安原生数据（包含链接）
-    return jsonify(binance_response)
+
+    return jsonify({
+        "success": success,
+        "msg": msg,
+        "postId": post_id,
+        "data": {"postId": post_id}
+    })
 
 @app.route('/api/config')
 def api_config():
