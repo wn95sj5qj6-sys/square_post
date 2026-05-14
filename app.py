@@ -728,16 +728,19 @@ def config_save():
 
 @app.route('/api/manual/auto_symbol')
 def manual_auto_symbol():
-    from topic_main import run_topic
-    t = run_topic()
-    return jsonify({'success': True, 'symbol': t['symbol']})
+    # 保持不变，还是返回热门交易对
+    from topic_main import get_top_symbols
+    symbols = get_top_symbols()
+    return jsonify({'success': True, 'symbol': symbols[0] if symbols else "BTCUSDT"})
 
 @app.route('/api/manual/full_topic')
 def manual_full_topic():
-    s = request.args.get('symbol')
+    # 修复点：从 URL 参数里拿到用户输入的交易对，传给 topic_main
+    symbol = request.args.get('symbol', '').strip()
     from topic_main import run_topic
-    t = run_topic()
-    return jsonify({'success': True, 'topic': t['text']})
+    # 关键：把 symbol 传给 run_topic 函数
+    topic = run_topic(target_symbol=symbol)
+    return jsonify({'success': True, 'topic': topic.get('text', '')})
 
 @app.route('/api/manual/generate_ai', methods=['POST'])
 def manual_generate_ai():
