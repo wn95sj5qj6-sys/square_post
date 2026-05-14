@@ -4,7 +4,6 @@ import json
 import datetime
 import threading
 import time
-import copy
 import urllib.parse
 
 app = Flask(__name__)
@@ -24,7 +23,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 # 多账号运行状态存储（内存中，key: 账号名，value: 是否运行）
 account_running_status = {}
-# 线程锁，保证多线程安全
 status_lock = threading.Lock()
 
 # ======================== 工具函数 ========================
@@ -74,7 +72,7 @@ def get_all_accounts():
             "name": acc_name,
             "key": acc["key"],
             "prompt": acc_config.get("prompt", ""),
-            "model_type": acc_config.get("zhipu"),
+            "model_type": acc_config.get("model_type", "zhipu"),
             "daily_limit": acc_config.get("daily_limit", DEFAULT_DAILY_LIMIT),
             "auto_interval": acc_config.get("auto_interval", DEFAULT_AUTO_INTERVAL),
             "running": running
@@ -234,7 +232,7 @@ def stop_account_auto_publish(account_name):
         account_running_status[account_name] = False
     return True
 
-# ======================== 网页模板（恢复旧版布局 + 补全删除） ========================
+# ======================== 网页模板（修复了JS交互） ========================
 UI_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -247,7 +245,6 @@ UI_TEMPLATE = """
             --primary: #007aff;
             --success: #34c759;
             --danger: #ff3b30;
-            --warning: #ff9500;
             --gray: #8e8e93;
             --light-gray: #f2f2f7;
             --border: #e5e5ea;
@@ -454,23 +451,207 @@ UI_TEMPLATE = """
         </div>
     </div>
     <script>
-        function switchTab(tabId){document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));document.querySelector(`.tab-btn[onclick="switchTab('${tabId}')"]`).classList.add('active');document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));document.getElementById(tabId).classList.add('active');if(tabId==='auto')refreshAutoPage();if(tabId==='config')loadAccountConfig();}
-        function loadAccountStatus(){const a=document.getElementById('auto_account_selector').value;if(!a){document.getElementById('auto_account_actions').style.display='none';return;}fetch(`/api/auto/status?account=${a}`).then(r=>r.json()).then(d=>{document.getElementById('auto_account_actions').style.display='block';document.getElementById('auto_account_name').textContent=a;fetch(`/api/stats/today?account=${a}`).then(r=>r.json()).then(s=>{const st=d.running?`<span style="color:var(--success);">运行中</span>`:`<span style="color:var(--gray);">已停止</span>`;document.getElementById('auto_account_status').innerHTML=`${st} | 限额:${s.limit} | 间隔:${d.auto_interval}分钟 | 已发:${s.count}(${s.auto_count}/${s.manual_count})`;document.getElementById('auto_start_btn').disabled=d.running;document.getElementById('auto_stop_btn').disabled=!d.running;});});}
-        function startAuto(){const a=document.getElementById('auto_account_selector').value;fetch('/api/auto/start?account='+a).then(r=>r.json()).then(d=>{alert(d.msg);refreshAutoPage();});}
-        function stopAuto(){const a=document.getElementById('auto_account_selector').value;fetch('/api/auto/stop?account='+a).then(r=>r.json()).then(d=>{alert(d.msg);refreshAutoPage();});}
-        function showAccountConfig(a){document.querySelectorAll('.stat-card').forEach(c=>c.classList.remove('active'));document.getElementById('stat_'+a).classList.add('active');fetch(`/api/config/load?account=${a}`).then(r=>r.json()).then(c=>{fetch(`/api/auto/last_run?account=${a}`).then(r=>r.json()).then(l=>{fetch(`/api/stats/today?account=${a}`).then(r=>r.json()).then(s=>{let h=`<div><strong>提示词：</strong>${c.prompt||'无'}</div><div><strong>模型：</strong>${c.model_type}</div><div><strong>限额：</strong>${c.daily_limit}</div><div><strong>间隔：</strong>${c.auto_interval}</div><div><strong>今日：</strong>${s.count}/${s.limit}</div>`;document.getElementById('config_detail_content').innerHTML=h;document.getElementById('account_config_detail').classList.add('active');});});});}
-        function refreshAutoPage(){fetch('/api/auto/refresh').then(r=>r.json()).then(d=>{let h='';for(const[n,s]of Object.entries(d.today_stats)){h+=`<div class="stat-card" onclick="showAccountConfig('${n}')"><div class="stat-value">${s.count}</div><div class="stat-label">${n}</div><div class="stat-label">自动:${s.auto_count} 手动:${s.manual_count}</div><div class="stat-label">剩余:${s.remaining}/${s.limit}</div>${s.running?'<div class="stat-label" style="color:var(--success);">运行中</div>':'<div class="stat-label" style="color:var(--gray);">已停止</div>'}</div>`;document.getElementById('today_stats').innerHTML=h;});}
-        function loadAccountConfig(){const a=document.getElementById('config_account').value;fetch(`/api/config/load?account=${a}`).then(r=>r.json()).then(c=>{document.getElementById('config_prompt').value=c.prompt||'';document.getElementById('config_model').value=c.model_type||'zhipu';document.getElementById('config_daily_limit').value=c.daily_limit||8;document.getElementById('config_interval').value=c.auto_interval||60;document.getElementById('config_log').textContent='已加载';});}
-        function saveAccountConfig(){const a=document.getElementById('config_account').value;const p=document.getElementById('config_prompt').value;const m=document.getElementById('config_model').value;const dl=parseInt(document.getElementById('config_daily_limit').value);const ai=parseInt(document.getElementById('config_interval').value);fetch('/api/config/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:a,prompt:p,model_type:m,daily_limit:dl,auto_interval:ai})}).then(r=>r.json()).then(d=>{document.getElementById('config_log').textContent=d.success?'✅保存成功':'❌保存失败';refreshAutoPage();});}
-        function autoSelectSymbol(){fetch('/api/manual/auto_symbol').then(r=>r.json()).then(d=>{document.getElementById('manual_symbol').value=d.symbol;});}
-        function generateFullTopic(){const s=document.getElementById('manual_symbol').value;fetch(`/api/manual/full_topic?symbol=${s}`).then(r=>r.json()).then(d=>{document.getElementById('manual_topic').value=d.topic;});}
-        function generateAIContent(){const t=document.getElementById('manual_topic').value;const k=document.getElementById('manual_account').value;fetch('/api/manual/generate_ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({topic:t,account_key:k})}).then(r=>r.text()).then(c=>{document.getElementById('manual_content').value=c;});}
-        function submitPost(){const k=document.getElementById('manual_account').value;const c=document.getElementById('manual_content').value;const s=document.getElementById('manual_symbol').value;const n=document.querySelector(`#manual_account option[value="${k}"]`).dataset.name;fetch('/api/manual/post',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account_key:k,content:c,symbol:s})}).then(r=>r.json()).then(d=>{document.getElementById('manual_log').textContent=d.success?'✅发文成功':'❌发文失败';});}
-        function loadRecords(){const a=document.getElementById('record_account').value;const d=document.getElementById('record_date').value;fetch(`/api/records?account=${a}&date=${d}`).then(r=>r.json()).then(rs=>{let h='';rs.forEach(r=>{h+=`<div class="record-item"><div class="record-header"><span class="record-symbol">${r.symbol}</span><span>${r.account}</span><span class="record-time">${r.time}</span></div><div class="record-content">${r.content}</div></div>`;});document.getElementById('records_list').innerHTML=h;});}
-        function exportRecords(){const a=document.getElementById('record_account').value;const d=document.getElementById('record_date').value;window.open(`/api/records/export?account=${encodeURIComponent(a)}&date=${encodeURIComponent(d)}`);}
-        function deleteSelectedRecords(){const a=document.getElementById('delete_account').value;const d=document.getElementById('delete_date').value;fetch(`/api/records/delete?account=${encodeURIComponent(a)}&date=${encodeURIComponent(d)}`,{method:'POST'}).then(r=>r.json()).then(d=>{document.getElementById('delete_log').textContent='已删除'+d.deleted_count+'条';loadRecords();});}
-        function deleteAllRecords(){fetch('/api/records/delete?all=true',{method:'POST'}).then(r=>r.json()).then(d=>{document.getElementById('delete_log').textContent='已删除全部';loadRecords();});}
-        window.onload=function(){refreshAutoPage();loadRecords();};
+        // 修复后的JS代码，确保所有函数都定义
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector(`.tab-btn[onclick="switchTab('${tabId}')"]`).classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+            if(tabId === 'auto') refreshAutoPage();
+            if(tabId === 'config') loadAccountConfig();
+        }
+        
+        function loadAccountStatus() {
+            const acc = document.getElementById('auto_account_selector').value;
+            if(!acc) {
+                document.getElementById('auto_account_actions').style.display = 'none';
+                return;
+            }
+            fetch(`/api/auto/status?account=${acc}`)
+                .then(r => r.json())
+                .then(d => {
+                    document.getElementById('auto_account_actions').style.display = 'block';
+                    document.getElementById('auto_account_name').textContent = acc;
+                    fetch(`/api/stats/today?account=${acc}`)
+                        .then(r => r.json())
+                        .then(s => {
+                            const st = d.running ? `<span style="color:var(--success);">运行中</span>` : `<span style="color:var(--gray);">已停止</span>`;
+                            document.getElementById('auto_account_status').innerHTML = `${st} | 限额:${s.limit} | 间隔:${d.auto_interval}分钟 | 已发:${s.count}(${s.auto_count}/${s.manual_count})`;
+                            document.getElementById('auto_start_btn').disabled = d.running;
+                            document.getElementById('auto_stop_btn').disabled = !d.running;
+                        });
+                });
+        }
+        
+        function startAuto() {
+            const acc = document.getElementById('auto_account_selector').value;
+            fetch(`/api/auto/start?account=${acc}`)
+                .then(r => r.json())
+                .then(d => {
+                    alert(d.msg);
+                    refreshAutoPage();
+                });
+        }
+        
+        function stopAuto() {
+            const acc = document.getElementById('auto_account_selector').value;
+            fetch(`/api/auto/stop?account=${acc}`)
+                .then(r => r.json())
+                .then(d => {
+                    alert(d.msg);
+                    refreshAutoPage();
+                });
+        }
+        
+        function showAccountConfig(acc) {
+            document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('active'));
+            document.getElementById('stat_'+acc).classList.add('active');
+            fetch(`/api/config/load?account=${acc}`)
+                .then(r => r.json())
+                .then(c => {
+                    fetch(`/api/auto/last_run?account=${acc}`)
+                        .then(r => r.json())
+                        .then(l => {
+                            fetch(`/api/stats/today?account=${acc}`)
+                                .then(r => r.json())
+                                .then(s => {
+                                    let h = `<div><strong>提示词：</strong>${c.prompt||'无'}</div><div><strong>模型：</strong>${c.model_type}</div><div><strong>限额：</strong>${c.daily_limit}</div><div><strong>间隔：</strong>${c.auto_interval}</div><div><strong>今日：</strong>${s.count}/${s.limit}</div>`;
+                                    document.getElementById('config_detail_content').innerHTML = h;
+                                    document.getElementById('account_config_detail').classList.add('active');
+                                });
+                        });
+                });
+        }
+        
+        function refreshAutoPage() {
+            fetch('/api/auto/refresh')
+                .then(r => r.json())
+                .then(d => {
+                    let h = '';
+                    for(const [n,s] of Object.entries(d.today_stats)) {
+                        h += `<div class="stat-card" onclick="showAccountConfig('${n}')"><div class="stat-value">${s.count}</div><div class="stat-label">${n}</div><div class="stat-label">自动:${s.auto_count} 手动:${s.manual_count}</div><div class="stat-label">剩余:${s.remaining}/${s.limit}</div>${s.running?'<div class="stat-label" style="color:var(--success);">运行中</div>':'<div class="stat-label" style="color:var(--gray);">已停止</div>'}</div>`;
+                    }
+                    document.getElementById('today_stats').innerHTML = h;
+                });
+        }
+        
+        function loadAccountConfig() {
+            const a = document.getElementById('config_account').value;
+            fetch(`/api/config/load?account=${a}`)
+                .then(r => r.json())
+                .then(c => {
+                    document.getElementById('config_prompt').value = c.prompt || '';
+                    document.getElementById('config_model').value = c.model_type || 'zhipu';
+                    document.getElementById('config_daily_limit').value = c.daily_limit || 8;
+                    document.getElementById('config_interval').value = c.auto_interval || 60;
+                    document.getElementById('config_log').textContent = '已加载';
+                });
+        }
+        
+        function saveAccountConfig() {
+            const a = document.getElementById('config_account').value;
+            const p = document.getElementById('config_prompt').value;
+            const m = document.getElementById('config_model').value;
+            const dl = parseInt(document.getElementById('config_daily_limit').value);
+            const ai = parseInt(document.getElementById('config_interval').value);
+            fetch('/api/config/save', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({account:a,prompt:p,model_type:m,daily_limit:dl,auto_interval:ai})
+            }).then(r => r.json()).then(d => {
+                document.getElementById('config_log').textContent = d.success ? '✅保存成功' : '❌保存失败';
+                refreshAutoPage();
+            });
+        }
+        
+        function autoSelectSymbol() {
+            fetch('/api/manual/auto_symbol')
+                .then(r => r.json())
+                .then(d => {
+                    document.getElementById('manual_symbol').value = d.symbol;
+                });
+        }
+        
+        function generateFullTopic() {
+            const s = document.getElementById('manual_symbol').value;
+            fetch(`/api/manual/full_topic?symbol=${s}`)
+                .then(r => r.json())
+                .then(d => {
+                    document.getElementById('manual_topic').value = d.topic;
+                });
+        }
+        
+        function generateAIContent() {
+            const t = document.getElementById('manual_topic').value;
+            const k = document.getElementById('manual_account').value;
+            fetch('/api/manual/generate_ai', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({topic:t,account_key:k})
+            }).then(r => r.text()).then(c => {
+                document.getElementById('manual_content').value = c;
+            });
+        }
+        
+        function submitPost() {
+            const k = document.getElementById('manual_account').value;
+            const c = document.getElementById('manual_content').value;
+            const s = document.getElementById('manual_symbol').value;
+            const n = document.querySelector(`#manual_account option[value="${k}"]`).dataset.name;
+            fetch('/api/manual/post', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({account_key:k,content:c,symbol:s})
+            }).then(r => r.json()).then(d => {
+                document.getElementById('manual_log').textContent = d.success ? '✅发文成功' : '❌发文失败';
+            });
+        }
+        
+        function loadRecords() {
+            const a = document.getElementById('record_account').value;
+            const d = document.getElementById('record_date').value;
+            fetch(`/api/records?account=${a}&date=${d}`)
+                .then(r => r.json())
+                .then(rs => {
+                    let h = '';
+                    rs.forEach(r => {
+                        h += `<div class="record-item"><div class="record-header"><span class="record-symbol">${r.symbol}</span><span>${r.account}</span><span class="record-time">${r.time}</span></div><div class="record-content">${r.content}</div></div>`;
+                    });
+                    document.getElementById('records_list').innerHTML = h;
+                });
+        }
+        
+        function exportRecords() {
+            const a = document.getElementById('record_account').value;
+            const d = document.getElementById('record_date').value;
+            window.open(`/api/records/export?account=${encodeURIComponent(a)}&date=${encodeURIComponent(d)}`);
+        }
+        
+        function deleteSelectedRecords() {
+            const a = document.getElementById('delete_account').value;
+            const d = document.getElementById('delete_date').value;
+            fetch(`/api/records/delete?account=${encodeURIComponent(a)}&date=${encodeURIComponent(d)}`, {method:'POST'})
+                .then(r => r.json())
+                .then(d => {
+                    document.getElementById('delete_log').textContent = '已删除'+d.deleted_count+'条';
+                    loadRecords();
+                });
+        }
+        
+        function deleteAllRecords() {
+            fetch('/api/records/delete?all=true', {method:'POST'})
+                .then(r => r.json())
+                .then(d => {
+                    document.getElementById('delete_log').textContent = '已删除全部';
+                    loadRecords();
+                });
+        }
+        
+        // 页面加载初始化
+        window.onload = function() {
+            refreshAutoPage();
+            loadRecords();
+        };
     </script>
 </body>
 </html>
@@ -486,123 +667,148 @@ def index():
 
 @app.route('/api/auto/start')
 def auto_start():
-    a=request.args.get('account')
-    ok=start_account_auto_publish(a)
-    return jsonify({'success':ok,'msg':'已启动' if ok else '已运行'})
+    a = request.args.get('account')
+    ok = start_account_auto_publish(a)
+    return jsonify({'success': ok, 'msg': '已启动' if ok else '已运行'})
 
 @app.route('/api/auto/stop')
 def auto_stop():
-    a=request.args.get('account')
+    a = request.args.get('account')
     stop_account_auto_publish(a)
-    return jsonify({'success':True,'msg':'已停止'})
+    return jsonify({'success': True, 'msg': '已停止'})
 
 @app.route('/api/auto/status')
 def auto_status():
-    a=request.args.get('account')
-    acc=get_account_by_name(a) or {}
-    return jsonify({'running':account_running_status.get(a,False),'daily_limit':acc.get('daily_limit',DEFAULT_DAILY_LIMIT),'auto_interval':acc.get('auto_interval',DEFAULT_AUTO_INTERVAL)})
+    a = request.args.get('account')
+    acc = get_account_by_name(a) or {}
+    return jsonify({
+        'running': account_running_status.get(a, False),
+        'daily_limit': acc.get('daily_limit', DEFAULT_DAILY_LIMIT),
+        'auto_interval': acc.get('auto_interval', DEFAULT_AUTO_INTERVAL)
+    })
 
 @app.route('/api/auto/refresh')
 def auto_refresh():
-    return jsonify({'accounts':get_all_accounts(),'today_stats':get_today_stats()})
+    return jsonify({
+        'accounts': get_all_accounts(),
+        'today_stats': get_today_stats()
+    })
 
 @app.route('/api/auto/last_run')
 def auto_last_run():
-    a=request.args.get('account')
-    cfg=load_json(CONFIG_FILE)
-    return jsonify({'last_run':cfg.get(f'{a}_last_run',''),'last_auto_run':cfg.get(f'{a}_last_auto_run',''),'last_manual_run':cfg.get(f'{a}_last_manual_run','')})
+    a = request.args.get('account')
+    cfg = load_json(CONFIG_FILE)
+    return jsonify({
+        'last_run': cfg.get(f'{a}_last_run', ''),
+        'last_auto_run': cfg.get(f'{a}_last_auto_run', ''),
+        'last_manual_run': cfg.get(f'{a}_last_manual_run', '')
+    })
 
 @app.route('/api/stats/today')
 def stats_today():
-    a=request.args.get('account')
+    a = request.args.get('account')
     return jsonify(get_today_stats(a))
 
 @app.route('/api/config/load')
 def config_load():
-    a=request.args.get('account')
-    acc=get_account_by_name(a) or {}
-    return jsonify({'prompt':acc.get('prompt',''),'model_type':acc.get('model_type','zhipu'),'daily_limit':acc.get('daily_limit',DEFAULT_DAILY_LIMIT),'auto_interval':acc.get('auto_interval',DEFAULT_AUTO_INTERVAL)})
+    a = request.args.get('account')
+    acc = get_account_by_name(a) or {}
+    return jsonify({
+        'prompt': acc.get('prompt', ''),
+        'model_type': acc.get('model_type', 'zhipu'),
+        'daily_limit': acc.get('daily_limit', DEFAULT_DAILY_LIMIT),
+        'auto_interval': acc.get('auto_interval', DEFAULT_AUTO_INTERVAL)
+    })
 
-@app.route('/api/config/save',methods=['POST'])
+@app.route('/api/config/save', methods=['POST'])
 def config_save():
-    d=request.json
-    save_account_prompt(d['account'],d['prompt'],d['daily_limit'],d['auto_interval'],d['model_type'])
-    return jsonify({'success':True})
+    d = request.json
+    save_account_prompt(d['account'], d['prompt'], d['daily_limit'], d['auto_interval'], d['model_type'])
+    return jsonify({'success': True})
 
 @app.route('/api/manual/auto_symbol')
 def manual_auto_symbol():
     from topic_main import run_topic
-    t=run_topic()
-    return jsonify({'success':True,'symbol':t['symbol']})
+    t = run_topic()
+    return jsonify({'success': True, 'symbol': t['symbol']})
 
 @app.route('/api/manual/full_topic')
 def manual_full_topic():
-    s=request.args.get('symbol')
+    s = request.args.get('symbol')
     from topic_main import run_topic
-    t=run_topic()
-    return jsonify({'success':True,'topic':t['text']})
+    t = run_topic()
+    return jsonify({'success': True, 'topic': t['text']})
 
-@app.route('/api/manual/generate_ai',methods=['POST'])
+@app.route('/api/manual/generate_ai', methods=['POST'])
 def manual_generate_ai():
-    d=request.json
-    t=d['topic']
-    k=d['account_key']
-    acc=get_account_by_key(k)
+    d = request.json
+    t = d['topic']
+    k = d['account_key']
+    acc = get_account_by_key(k)
     from ai_core import generate_content
-    c,_=generate_content({'text':t},api_key=ZHIPU_API_KEY,model_type=acc.get('model_type','zhipu'),custom_prompt=acc.get('prompt',''))
+    c, _ = generate_content(
+        {'text': t},
+        api_key=ZHIPU_API_KEY,
+        model_type=acc.get('model_type', 'zhipu'),
+        custom_prompt=acc.get('prompt', '')
+    )
     return c or ''
 
-@app.route('/api/manual/post',methods=['POST'])
+@app.route('/api/manual/post', methods=['POST'])
 def manual_post():
-    d=request.json
-    k=d['account_key']
-    c=d['content']
-    s=d['symbol']
-    acc=get_account_by_key(k)
+    d = request.json
+    k = d['account_key']
+    c = d['content']
+    s = d['symbol']
+    acc = get_account_by_key(k)
     from post_main import post_content
-    ok,msg,pid=post_content(c,k)
-    pid=str(pid) if pid else '未知'
+    ok, msg, pid = post_content(c, k)
+    pid = str(pid) if pid else '未知'
     if ok:
-        save_post_record('manual',acc['name'],s,c,pid)
-    return jsonify({'success':ok,'post_id':pid})
+        save_post_record('manual', acc['name'], s, c, pid)
+    return jsonify({'success': ok, 'post_id': pid})
 
 @app.route('/api/records')
 def records():
-    a=request.args.get('account')
-    d=request.args.get('date')
-    db=load_json(DB_FILE,[])
-    res=[]
+    a = request.args.get('account')
+    d = request.args.get('date')
+    db = load_json(DB_FILE, [])
+    res = []
     for r in db:
-        if a and r['account']!=a:continue
-        if d and r['date']!=d:continue
+        if a and r['account'] != a:
+            continue
+        if d and r['date'] != d:
+            continue
         res.append(r)
     return jsonify(res)
 
 @app.route('/api/records/export')
 def records_export():
-    a=request.args.get('account')
-    d=request.args.get('date')
-    db=load_json(DB_FILE,[])
-    res=[]
+    a = request.args.get('account')
+    d = request.args.get('date')
+    db = load_json(DB_FILE, [])
+    res = []
     for r in db:
-        if a and r['account']!=a:continue
-        if d and r['date']!=d:continue
+        if a and r['account'] != a:
+            continue
+        if d and r['date'] != d:
+            continue
         res.append(r)
-    csv='模式,账号,日期,时间,交易对,ID,状态,内容\n'
+    csv = '模式,账号,日期,时间,交易对,ID,状态,内容\n'
     for r in res:
-        csv+=f"{r['mode']},{r['account']},{r['date']},{r['time']},{r['symbol']},{r['post_id']},{r['status']},\"{r['content']}\"\n"
-    response=make_response(csv)
-    response.headers["Content-Type"]="text/csv;charset=utf-8"
-    response.headers["Content-Disposition"]="attachment;filename=records.csv"
+        csv += f"{r['mode']},{r['account']},{r['date']},{r['time']},{r['symbol']},{r['post_id']},{r['status']},\"{r['content']}\"\n"
+    response = make_response(csv)
+    response.headers["Content-Type"] = "text/csv;charset=utf-8"
+    response.headers["Content-Disposition"] = "attachment;filename=records.csv"
     return response
 
-@app.route('/api/records/delete',methods=['POST'])
+@app.route('/api/records/delete', methods=['POST'])
 def records_delete():
-    a=request.args.get('account')
-    d=request.args.get('date')
-    all_records=request.args.get('all')=='true'
-    cnt=delete_records(a,d,all_records)
-    return jsonify({'success':True,'deleted_count':cnt})
+    a = request.args.get('account')
+    d = request.args.get('date')
+    all_records = request.args.get('all') == 'true'
+    cnt = delete_records(a, d, all_records)
+    return jsonify({'success': True, 'deleted_count': cnt})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0',port=5000,debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=False)
