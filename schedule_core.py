@@ -3,28 +3,32 @@ import random
 import datetime
 import threading
 
-# ========== 全局默认配置（账号无配置时用） ==========
+# ========== 强制时区：北京时间 UTC+8，永远不变 ==========
+def beijing_now():
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+
+def get_today_str():
+    return beijing_now().strftime("%Y-%m-%d")
+
+# ========== 全局默认配置 ==========
 DEFAULT_DAILY_MIN = 10
 DEFAULT_DAILY_MAX = 20
 DEFAULT_INTERVAL_MIN = 8
 DEFAULT_INTERVAL_MAX = 25
 DEFAULT_ACTIVE_START = "08:00"
 DEFAULT_ACTIVE_END = "22:00"
-# =====================================================
 
 account_schedule = {}
 schedule_lock = threading.Lock()
 
-def get_today_str():
-    return datetime.date.today().strftime("%Y-%m-%d")
-
 def is_in_active_time(start_time: str, end_time: str) -> bool:
-    now = datetime.datetime.now().time()
+    # 永远使用北京时间判断
+    now = beijing_now().time()
     try:
         start_h, start_m = map(int, start_time.split(":"))
         end_h, end_m = map(int, end_time.split(":"))
     except:
-        return True
+        return False
 
     start_t = datetime.time(start_h, start_m)
     end_t = datetime.time(end_h, end_m)
@@ -74,7 +78,7 @@ def inc_published(account_name):
         if plan.get("date") == today:
             plan["published"] += 1
 
-def can_publish(account_name, acc_cfg):
+def can_publish(account_name: str, acc_cfg: dict) -> bool:
     cfg = get_account_schedule_config(acc_cfg)
     if not is_in_active_time(cfg["active_start"], cfg["active_end"]):
         return False
