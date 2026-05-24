@@ -1,4 +1,10 @@
 # -*- coding: utf-8 -*-
+"""
+币安广场发文助手 - 话题生成模块（增强版）
+整合市场行为特征分析器，生成深度市场分析报告。
+对外接口保持不变：run_topic(target_symbol=None) 和 get_single_symbol_topic(symbol)
+输出颗粒度与 analyzer.py 完全一致（包含所有解读、等级、短期建议等）
+"""
 import requests
 import math
 import random
@@ -7,85 +13,123 @@ import os
 import time
 from datetime import datetime, timedelta, UTC
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from itertools import groupby
 
-# ========================
-# 所有配置（单文件，不拆分）
-# ========================
+# ======================== 原有配置（保留） ========================
 HISTORY_FILE = "data/memory.json"
 OUTPUT_FILE = "data/topics.json"
 MAX_PER_SYMBOL_24H = 2
 COOLDOWN_MINUTES = 30
 SOFT_COOLDOWN_MINUTES = 120
 
-# ========================
-# 【已严格对齐】长短期周期统一
-# ========================
-# 短期：15分钟 ×12根（K线与OI完全一致）
-SHORT_K_INTERVAL = "15m"
-SHORT_K_LIMIT = 12
-SHORT_OI_PERIOD = "15m"
-SHORT_OI_LIMIT = 12
+# ======================== 市场行为分析器参数配置 ========================
+# 周期定义（名称, K线间隔, 短期窗口, 中期窗口, 长期窗口, 最小K线数, 是否计算订单流, 是否计算微观形态）
+PERIODS = [
+    {"name": "15m", "interval": "15m", "short": 10, "mid": 20, "long": 50,
+     "min_klines": 100, "calc_orderflow": True, "calc_micro": True},
+    {"name": "1h",  "interval": "1h",  "short": 10, "mid": 20, "long": 50,
+     "min_klines": 100, "calc_orderflow": True, "calc_micro": True},
+    {"name": "4h",  "interval": "4h",  "short": 10, "mid": 20, "long": 50,
+     "min_klines": 100, "calc_orderflow": False, "calc_micro": False},
+    {"name": "1d",  "interval": "1d",  "short": 10, "mid": 20, "long": 50,
+     "min_klines": 100, "calc_orderflow": False, "calc_micro": False},
+]
 
-# 长期：1小时 ×24根（K线与OI完全一致）
-LONG_K_INTERVAL = "1h"
-LONG_K_LIMIT = 24
-LONG_OI_PERIOD = "1h"
-LONG_OI_LIMIT = 24
+# 总体价格特征参数
+OVERALL_MONTHLY_LIMIT = 24   # 近2年月度K线根数
+OVERALL_QUARTER_DAYS = 90    # 近3个月日线根数
+OVERALL_MONTH_DAYS = 30      # 近1个月日线根数
 
-# 趋势状态
-TREND_STRONG_UP = "strong_up"
-TREND_WEAK_UP = "weak_up"
-TREND_RANGE = "range"
-TREND_WEAK_DOWN = "weak_down"
-TREND_STRONG_DOWN = "strong_down"
-TREND_UP_STATES = {TREND_STRONG_UP, TREND_WEAK_UP}
-TREND_DOWN_STATES = {TREND_STRONG_DOWN, TREND_WEAK_DOWN}
-TREND_STRONG_STATES = {TREND_STRONG_UP, TREND_STRONG_DOWN}
+# 通用阈值
+TREND_SLOPE_THRESHOLD_RATIO = 0.0001   # 趋势方向斜率阈值系数
+EFFICIENCY_WINDOW = 14                 # 趋势强度窗口
+ATR_PERIOD = 14                        # ATR周期
+ATR_COMPARE_WINDOW = 20                # ATR比较窗口
+BOLL_PERIOD = 20                       # 布林带周期
+BOLL_STD_MULT = 2                      # 布林带标准差倍数
+VOLUME_MA_WINDOW = 20                  # 成交量均线窗口
+HIGH_VOLUME_RATIO = 1.2                # 放量阈值
+LOW_VOLUME_RATIO = 0.8                 # 缩量阈值
+AMPLITUDE_HIGH_RATIO = 2.0             # 异常振幅阈值
+DELTA_TREND_WINDOW = 5                 # Delta趋势窗口
+DIVERGENCE_LOOKBACK = 20               # 背离检测窗口
+ENERGY_EXHAUSTION_PRICE_WINDOW = 10    # 价格创新高窗口
+ENERGY_EXHAUSTION_DELTA_DOWN = 3       # Delta连续下降窗口
 
-# 持仓状态
-OI_STRONG_INCREASE = "strong_increase"
-OI_INCREASE = "increase"
-OI_STABLE = "stable"
-OI_DECREASE = "decrease"
-OI_STRONG_DECREASE = "strong_decrease"
-OI_INCREASE_STATES = {OI_STRONG_INCREASE, OI_INCREASE}
-OI_DECREASE_STATES = {OI_STRONG_DECREASE, OI_STRONG_DECREASE}
+# ======================== 等级映射函数 ========================
+def map_trend_strength(score):
+    if score >= 80: return "极强"
+    if score >= 60: return "较强"
+    if score >= 40: return "中等"
+    if score >= 20: return "较弱"
+    return "极弱"
 
-# 资金费率状态
-FUNDING_EXTREME_LONG = "extreme_long"
-FUNDING_LONG_BIAS = "long_bias"
-FUNDING_NEUTRAL = "neutral"
-FUNDING_SHORT_BIAS = "short_bias"
-FUNDING_EXTREME_SHORT = "extreme_short"
-FUNDING_LONG_STATES = {FUNDING_EXTREME_LONG, FUNDING_LONG_BIAS}
-FUNDING_SHORT_STATES = {FUNDING_EXTREME_SHORT, FUNDING_SHORT_BIAS}
+def map_price_position(pct):
+    if pct >= 80: return "高位区"
+    if pct >= 60: return "中高位"
+    if pct >= 40: return "中位"
+    if pct >= 20: return "中低位"
+    return "低位区"
 
-# ========================
-# 安全风控配置
-# ========================
-MAX_WORKERS = 2
-PER_SYMBOL_WORKERS = 2
-REQUEST_DELAY_MIN = 0.3
-REQUEST_DELAY_MAX = 0.5
+def map_volatility_expansion(rate):
+    if rate > 30: return "显著扩张"
+    if rate > 10: return "温和扩张"
+    if rate < -10: return "收缩"
+    return "持平"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-    "Accept": "application/json",
-}
+def map_bollinger_compression(bandwidth):
+    if bandwidth < 2: return "极度压缩"
+    if bandwidth < 4: return "压缩"
+    if bandwidth < 8: return "正常"
+    if bandwidth < 12: return "扩张"
+    return "极度扩张"
 
-# ========================
-# 核心配置
-# ========================
-MAIN_STREAM_SYMBOLS = {
-    "BTCUSDT", "ETHUSDT", "BNBUSDT",
-    "SOLUSDT", "XRPUSDT", "ADAUSDT",
-    "DOGEUSDT", "AVAXUSDT", "TRXUSDT"
-}
+def map_amplitude_ratio(ratio):
+    if ratio >= 2.0: return "异常波动"
+    if ratio >= 1.2: return "放大"
+    if ratio <= 0.5: return "萎缩"
+    return "正常"
 
-# ========================
-# 工具函数
-# ========================
+def map_delta_strength(strength):
+    if strength >= 30: return "强攻击性"
+    if strength >= 15: return "中等"
+    return "弱"
+
+def map_active_buy_ratio(ratio):
+    if ratio > 60: return "买方主动主导"
+    if ratio < 40: return "卖方主动主导"
+    return "多空平衡"
+
+def map_avg_trade_size(ratio):
+    if ratio >= 1.5: return "大资金参与"
+    if ratio <= 0.8: return "散户为主"
+    return "正常"
+
+def map_relative_volume(ratio):
+    if ratio >= 2.0: return "异常放量"
+    if ratio >= 1.2: return "放量"
+    if ratio <= 0.5: return "缩量"
+    return "正常"
+
+def map_body_ratio(ratio):
+    if ratio >= 70: return "大实体"
+    if ratio >= 40: return "中实体"
+    if ratio >= 10: return "小实体"
+    return "十字星"
+
+def map_wick_ratio(ratio):
+    if ratio > 50: return "长影线"
+    if ratio > 20: return "中等"
+    return "短影线"
+
+def map_momentum_acceleration(acc):
+    return "加速" if acc > 0 else "减速" if acc < 0 else "平稳"
+
+def map_vwap_position(deviation):
+    if deviation > 0.5: return "多头控制"
+    if deviation < -0.5: return "空头控制"
+    return "中性"
+
+# ======================== 工具函数（保留原有） ========================
 def now():
     return datetime.now(UTC)
 
@@ -107,324 +151,943 @@ def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+# ======================== 增强的API数据拉取（同步，带缓存） ========================
+_klines_cache = {}
+_oi_cache = {}
+_funding_rate_cache = {}
+_funding_hist_cache = {}
+_cache_ttl = 300  # 5分钟
+
+def _get_cache(cache_dict, key):
+    if key in cache_dict:
+        data, ts = cache_dict[key]
+        if time.time() - ts < _cache_ttl:
+            return data
+        del cache_dict[key]
+    return None
+
+def _set_cache(cache_dict, key, data):
+    cache_dict[key] = (data, time.time())
+
+def fetch_klines_sync(symbol, interval, limit=200):
+    """同步获取K线数据，支持15m/1h/4h/1d/1M"""
+    cache_key = f"{symbol}_{interval}_{limit}"
+    cached = _get_cache(_klines_cache, cache_key)
+    if cached:
+        return cached
+    url = "https://fapi.binance.com/fapi/v1/klines"
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        raw = resp.json()
+    except Exception as e:
+        print(f"请求K线失败 {symbol} {interval}: {e}")
+        return None
+    klines = []
+    for k in raw:
+        item = {
+            "timestamp": k[0],
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5]),
+        }
+        if interval in ["15m", "1h"]:
+            # 主动买入量(索引9) 和 成交笔数(索引8)
+            item["taker_buy_volume"] = float(k[9]) if len(k) > 9 else 0.0
+            item["trades_count"] = int(k[8]) if len(k) > 8 else 0
+        klines.append(item)
+    _set_cache(_klines_cache, cache_key, klines)
+    return klines
+
+def fetch_oi_hist_sync(symbol, period="15m", limit=200):
+    cache_key = f"oi_{symbol}_{period}_{limit}"
+    cached = _get_cache(_oi_cache, cache_key)
+    if cached:
+        return cached
+    url = "https://fapi.binance.com/futures/data/openInterestHist"
+    params = {"symbol": symbol, "period": period, "limit": limit}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"请求OI失败 {symbol}: {e}")
+        return None
+    oi_points = [{"timestamp": item["timestamp"], "oi_value": float(item["sumOpenInterest"])} for item in data]
+    _set_cache(_oi_cache, cache_key, oi_points)
+    return oi_points
+
+def fetch_current_funding_rate_sync(symbol):
+    cache_key = f"funding_rate_{symbol}"
+    cached = _get_cache(_funding_rate_cache, cache_key)
+    if cached:
+        return cached
+    url = "https://fapi.binance.com/fapi/v1/premiumIndex"
+    params = {"symbol": symbol}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        rate = float(data["lastFundingRate"])
+    except Exception as e:
+        print(f"请求资金费率失败 {symbol}: {e}")
+        return None
+    _set_cache(_funding_rate_cache, cache_key, rate)
+    return rate
+
+def fetch_funding_history_sync(symbol, limit=1000):
+    cache_key = f"funding_hist_{symbol}_{limit}"
+    cached = _get_cache(_funding_hist_cache, cache_key)
+    if cached:
+        return cached
+    url = "https://fapi.binance.com/fapi/v1/fundingRate"
+    params = {"symbol": symbol, "limit": limit}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"请求资金费率历史失败 {symbol}: {e}")
+        return None
+    history = [{"timestamp": item["fundingTime"], "funding_rate": float(item["fundingRate"])} for item in data]
+    _set_cache(_funding_hist_cache, cache_key, history)
+    return history
+
+# ======================== 特征计算函数（与 analyzer.py 完全一致） ========================
+def linear_regression_slope(y):
+    n = len(y)
+    if n < 2:
+        return 0.0
+    x = list(range(n))
+    sum_x = sum(x)
+    sum_y = sum(y)
+    sum_xy = sum(xi*yi for xi,yi in zip(x,y))
+    sum_xx = sum(xi*xi for xi in x)
+    denom = n*sum_xx - sum_x*sum_x
+    if denom == 0:
+        return 0.0
+    return (n*sum_xy - sum_x*sum_y) / denom
+
+def calc_trend_direction(closes, window, last_price):
+    if len(closes) < window:
+        return None, "数据不足"
+    y = closes[-window:]
+    slope = linear_regression_slope(y)
+    threshold = last_price * TREND_SLOPE_THRESHOLD_RATIO
+    if abs(slope) < threshold:
+        dir_str = "横盘"
+    else:
+        dir_str = "上涨" if slope > 0 else "下跌"
+    return slope, dir_str
+
+def calc_trend_strength(closes):
+    if len(closes) < EFFICIENCY_WINDOW:
+        return None, "数据不足"
+    y = closes[-EFFICIENCY_WINDOW:]
+    net = abs(y[-1] - y[0])
+    path = sum(abs(y[i]-y[i-1]) for i in range(1, len(y)))
+    if path == 0:
+        ratio = 0.0
+    else:
+        ratio = net / path
+    score = ratio * 100
+    grade = map_trend_strength(score)
+    return score, grade
+
+def calc_price_position(highs, lows, current_close):
+    if not highs or not lows:
+        return None, "数据不足"
+    h = max(highs)
+    l = min(lows)
+    if h == l:
+        pct = 50.0
+    else:
+        pct = (current_close - l) / (h - l) * 100
+    pct = max(0, min(100, pct))
+    grade = map_price_position(pct)
+    return pct, grade
+
+def calc_atr(highs, lows, closes):
+    if len(closes) < ATR_PERIOD + 1:
+        return None, None
+    tr_list = []
+    for i in range(1, len(closes)):
+        hl = highs[i] - lows[i]
+        hc = abs(highs[i] - closes[i-1])
+        lc = abs(lows[i] - closes[i-1])
+        tr = max(hl, hc, lc)
+        tr_list.append(tr)
+    atr = sum(tr_list[-ATR_PERIOD:]) / ATR_PERIOD
+    if len(tr_list) >= ATR_COMPARE_WINDOW:
+        atr_avg = sum(tr_list[-ATR_COMPARE_WINDOW:]) / ATR_COMPARE_WINDOW
+    else:
+        atr_avg = atr
+    return atr, atr_avg
+
+def calc_volatility_expansion(atr, atr_avg):
+    if atr_avg == 0:
+        rate = 0.0
+    else:
+        rate = (atr / atr_avg - 1) * 100
+    grade = map_volatility_expansion(rate)
+    return rate, grade
+
+def calc_bollinger_bandwidth(closes):
+    if len(closes) < BOLL_PERIOD:
+        return None, "数据不足"
+    window = closes[-BOLL_PERIOD:]
+    sma = sum(window) / BOLL_PERIOD
+    variance = sum((x - sma)**2 for x in window) / BOLL_PERIOD
+    std = math.sqrt(variance)
+    bandwidth = (2 * BOLL_STD_MULT * std) / sma * 100 if sma != 0 else 0
+    grade = map_bollinger_compression(bandwidth)
+    return bandwidth, grade
+
+def calc_amplitude_ratio(high, low, avg_amplitude):
+    amp = (high - low) / low * 100 if low != 0 else 0
+    if avg_amplitude == 0:
+        ratio = 1.0
+    else:
+        ratio = amp / avg_amplitude
+    grade = map_amplitude_ratio(ratio)
+    return amp, ratio, grade
+
+def calc_delta(volume, taker_buy):
+    return 2 * taker_buy - volume
+
+def calc_delta_strength(delta, volume):
+    if volume == 0:
+        return 0, "弱"
+    strength = abs(delta) / volume * 100
+    grade = map_delta_strength(strength)
+    return strength, grade
+
+def calc_delta_trend(deltas):
+    if len(deltas) < 2:
+        return "平稳"
+    slope = linear_regression_slope(deltas)
+    if slope > 5:
+        return "上升"
+    elif slope < -5:
+        return "下降"
+    else:
+        return "平稳"
+
+def calc_delta_divergence(prices, deltas):
+    if len(prices) < DIVERGENCE_LOOKBACK or len(deltas) < DIVERGENCE_LOOKBACK:
+        return False
+    recent_prices = prices[-DIVERGENCE_LOOKBACK:]
+    recent_deltas = deltas[-DIVERGENCE_LOOKBACK:]
+    price_max = max(recent_prices)
+    delta_max = max(recent_deltas)
+    if prices[-1] >= price_max * 0.99 and deltas[-1] < delta_max * 0.8:
+        return True
+    return False
+
+def calc_active_buy_ratio(taker_buy, volume):
+    if volume == 0:
+        return 50.0, "多空平衡"
+    ratio = taker_buy / volume * 100
+    grade = map_active_buy_ratio(ratio)
+    return ratio, grade
+
+def calc_avg_trade_size(volume, trades_count, hist_avg):
+    if trades_count == 0:
+        return 0, "数据不足"
+    cur = volume / trades_count
+    if hist_avg == 0:
+        ratio = 1.0
+    else:
+        ratio = cur / hist_avg
+    grade = map_avg_trade_size(ratio)
+    return cur, ratio, grade
+
+def calc_relative_volume(current_vol, vol_ma):
+    if vol_ma == 0:
+        return 1.0, "正常"
+    ratio = current_vol / vol_ma
+    grade = map_relative_volume(ratio)
+    return ratio, grade
+
+def calc_volume_trend(volumes):
+    if len(volumes) < 2:
+        return "平稳"
+    slope = linear_regression_slope(volumes)
+    if slope > 0:
+        return "上升"
+    elif slope < 0:
+        return "下降"
+    else:
+        return "平稳"
+
+def calc_volume_extreme(current_vol, vol_history):
+    sorted_vol = sorted(vol_history, reverse=True)
+    top2 = sorted_vol[:2] if len(sorted_vol) >= 2 else sorted_vol
+    return current_vol in top2
+
+def calc_volume_cluster(volumes, ma, threshold=1.5):
+    recent = volumes[-3:] if len(volumes) >= 3 else volumes
+    cluster = sum(1 for v in recent if v > ma * threshold)
+    return cluster >= 2
+
+def calc_swing_structure(highs, lows):
+    if len(highs) < 20 or len(lows) < 20:
+        return "数据不足"
+    recent_highs = highs[-20:]
+    recent_lows = lows[-20:]
+    high_trend = recent_highs[-1] > recent_highs[0]
+    low_trend = recent_lows[-1] > recent_lows[0]
+    if high_trend and low_trend:
+        return "HH+HL (上升结构)"
+    elif not high_trend and not low_trend:
+        return "LH+LL (下降结构)"
+    else:
+        return "杂乱 (震荡)"
+
+def calc_structure_breakout(close, swing_high, swing_low, vol_ratio):
+    if close > swing_high:
+        direction = "向上突破"
+        effective = "有效突破" if vol_ratio >= 1.5 else "疑似假突破"
+        return direction, effective
+    elif close < swing_low:
+        direction = "向下突破"
+        effective = "有效突破" if vol_ratio >= 1.5 else "疑似假突破"
+        return direction, effective
+    return "无", ""
+
+def calc_support_resistance(highs, lows):
+    short_res = max(highs[-5:]) if len(highs) >= 5 else 0
+    short_sup = min(lows[-5:]) if len(lows) >= 5 else 0
+    main_res = max(highs[-20:]) if len(highs) >= 20 else 0
+    main_sup = min(lows[-20:]) if len(lows) >= 20 else 0
+    return short_res, short_sup, main_res, main_sup
+
+def calc_body_ratio(open_p, close, high, low):
+    body = abs(close - open_p)
+    total = high - low
+    if total == 0:
+        return 0, "十字星"
+    ratio = body / total * 100
+    grade = map_body_ratio(ratio)
+    return ratio, grade
+
+def calc_wick_ratios(open_p, close, high, low):
+    total = high - low
+    if total == 0:
+        return 0, 0, "短影线", "短影线"
+    top = high - max(open_p, close)
+    bottom = min(open_p, close) - low
+    upper_ratio = top / total * 100
+    lower_ratio = bottom / total * 100
+    grade_upper = map_wick_ratio(upper_ratio)
+    grade_lower = map_wick_ratio(lower_ratio)
+    return upper_ratio, lower_ratio, grade_upper, grade_lower
+
+def calc_candlestick_pattern(k1, k2):
+    if k1['close'] < k1['open'] and k2['close'] > k2['open']:
+        if k2['open'] <= k1['close'] and k2['close'] >= k1['open']:
+            return "看涨吞没"
+    if k1['close'] > k1['open'] and k2['close'] < k2['open']:
+        if k2['open'] >= k1['close'] and k2['close'] <= k1['open']:
+            return "看跌吞没"
+    return "无"
+
+def calc_momentum(closes, n):
+    if len(closes) < n+1:
+        return None
+    return closes[-1] - closes[-n-1]
+
+def calc_momentum_acceleration(mom_cur, mom_prev):
+    if mom_cur is None or mom_prev is None:
+        return 0, "平稳"
+    acc = mom_cur - mom_prev
+    grade = map_momentum_acceleration(acc)
+    return acc, grade
+
+def calc_vwap_position(closes, volumes, atr):
+    if len(closes) < 20 or atr == 0:
+        return 0, "中性"
+    vwap = sum(c*v for c,v in zip(closes[-20:], volumes[-20:])) / sum(volumes[-20:])
+    deviation = (closes[-1] - vwap) / atr
+    grade = map_vwap_position(deviation)
+    return deviation, grade
+
+def calc_volume_price_coordination(price_dir, vol_ratio):
+    if price_dir == "涨":
+        if vol_ratio >= 1.2:
+            return "量价齐升 (健康上涨)"
+        elif vol_ratio <= 0.8:
+            return "价升量缩 (上涨乏力)"
+        else:
+            return "量价正常"
+    else:
+        if vol_ratio >= 1.2:
+            return "量价齐跌 (健康下跌)"
+        elif vol_ratio <= 0.8:
+            return "价跌量缩 (下跌乏力)"
+        else:
+            return "量价正常"
+
+def calc_energy_exhaustion(prices, deltas, relative_vols):
+    if len(prices) < 15:
+        return False
+    recent_high = max(prices[-5:])
+    earlier_high = max(prices[-15:-5])
+    if recent_high <= earlier_high:
+        return False
+    if len(deltas) >= 3 and all(deltas[-i] <= deltas[-i-1] for i in range(1,3)):
+        return True
+    if len(relative_vols) >= 3 and all(relative_vols[-i] <= relative_vols[-i-1] for i in range(1,3)):
+        return True
+    return False
+
+# ==================== 单周期分析函数 ====================
+def analyze_period(klines, period_cfg):
+    if not klines or len(klines) < period_cfg["min_klines"]:
+        return None
+    closes = [k['close'] for k in klines]
+    highs = [k['high'] for k in klines]
+    lows = [k['low'] for k in klines]
+    volumes = [k['volume'] for k in klines]
+    last_close = closes[-1]
+    last_high = highs[-1]
+    last_low = lows[-1]
+    last_open = klines[-1]['open']
+
+    short_slope, short_dir = calc_trend_direction(closes, period_cfg['short'], last_close)
+    mid_slope, mid_dir = calc_trend_direction(closes, period_cfg['mid'], last_close)
+    long_slope, long_dir = calc_trend_direction(closes, period_cfg['long'], last_close)
+    strength_score, strength_grade = calc_trend_strength(closes)
+    persistence = 0
+    for i in range(len(klines)-1, -1, -1):
+        if klines[i]['close'] > klines[i]['open']:
+            persistence += 1
+        else:
+            break
+    pos_pct, pos_grade = calc_price_position(highs[-period_cfg['long']:], lows[-period_cfg['long']:], last_close)
+
+    atr, atr_avg = calc_atr(highs, lows, closes)
+    if atr is not None:
+        exp_rate, exp_grade = calc_volatility_expansion(atr, atr_avg)
+    else:
+        exp_rate, exp_grade = None, "数据不足"
+    bandwidth, bb_grade = calc_bollinger_bandwidth(closes)
+    amp_avg = sum((highs[i]-lows[i])/lows[i]*100 for i in range(-20,0)) / 20 if len(lows)>=20 else 0
+    amp_cur, amp_ratio, amp_grade = calc_amplitude_ratio(last_high, last_low, amp_avg)
+
+    delta_cur = None
+    delta_strength = None
+    delta_strength_grade = None
+    delta_trend = None
+    divergence = None
+    active_ratio = None
+    active_grade = None
+    avg_trade = None
+    at_grade = None
+    delta_vals = []
+
+    if period_cfg.get("calc_orderflow", False) and "taker_buy_volume" in klines[-1]:
+        taker_buy = [k['taker_buy_volume'] for k in klines]
+        trades = [k['trades_count'] for k in klines]
+        delta_vals = [calc_delta(volumes[i], taker_buy[i]) for i in range(len(klines))]
+        delta_cur = delta_vals[-1]
+        delta_strength, delta_strength_grade = calc_delta_strength(delta_cur, volumes[-1])
+        delta_trend = calc_delta_trend(delta_vals[-5:])
+        divergence = calc_delta_divergence(closes, delta_vals)
+        active_ratio, active_grade = calc_active_buy_ratio(taker_buy[-1], volumes[-1])
+        hist_avg_trade = sum(volumes[-20-i]/trades[-20-i] for i in range(20) if trades[-20-i]>0) / 20 if len(trades)>=20 else 0
+        avg_trade, _, at_grade = calc_avg_trade_size(volumes[-1], trades[-1], hist_avg_trade)
+
+    vol_ma = sum(volumes[-VOLUME_MA_WINDOW:]) / VOLUME_MA_WINDOW if len(volumes)>=VOLUME_MA_WINDOW else 0
+    rel_vol_ratio, rel_vol_grade = calc_relative_volume(volumes[-1], vol_ma)
+    vol_trend = calc_volume_trend(volumes[-5:])
+    vol_extreme = calc_volume_extreme(volumes[-1], volumes[-20:])
+    vol_cluster = calc_volume_cluster(volumes, vol_ma)
+
+    swing_struct = calc_swing_structure(highs, lows)
+    swing_high = max(highs[-10:]) if len(highs)>=10 else last_high
+    swing_low = min(lows[-10:]) if len(lows)>=10 else last_low
+    break_dir, break_eff = calc_structure_breakout(last_close, swing_high, swing_low, rel_vol_ratio)
+    short_res, short_sup, main_res, main_sup = calc_support_resistance(highs, lows)
+
+    body_ratio = None
+    body_grade = None
+    upper_wick = None
+    lower_wick = None
+    uw_grade = None
+    lw_grade = None
+    pattern = None
+    if period_cfg.get("calc_micro", False):
+        body_ratio, body_grade = calc_body_ratio(last_open, last_close, last_high, last_low)
+        upper_wick, lower_wick, uw_grade, lw_grade = calc_wick_ratios(last_open, last_close, last_high, last_low)
+        if len(klines) >= 2:
+            pattern = calc_candlestick_pattern(klines[-2], klines[-1])
+        else:
+            pattern = "无"
+
+    mom5 = calc_momentum(closes, 5)
+    mom10 = calc_momentum(closes, 10)
+    mom20 = calc_momentum(closes, 20)
+    mom10_prev = calc_momentum(closes[:-1], 10) if len(closes)>1 else None
+    mom_acc, mom_acc_grade = calc_momentum_acceleration(mom10, mom10_prev)
+    vwap_dev, vwap_grade = calc_vwap_position(closes, volumes, atr if atr else 0)
+    price_dir = "涨" if last_close > closes[-2] else "跌"
+    vol_price_coord = calc_volume_price_coordination(price_dir, rel_vol_ratio)
+    energy_exhaust = calc_energy_exhaustion(closes, delta_vals, [rel_vol_ratio]*5)
+
+    return {
+        "trend": {
+            "short": {"slope": short_slope, "dir": short_dir},
+            "mid": {"slope": mid_slope, "dir": mid_dir},
+            "long": {"slope": long_slope, "dir": long_dir},
+            "strength": {"score": strength_score, "grade": strength_grade},
+            "persistence": persistence,
+            "price_position": {"pct": pos_pct, "grade": pos_grade}
+        },
+        "volatility": {
+            "atr": atr, "atr_avg": atr_avg,
+            "expansion_rate": exp_rate, "expansion_grade": exp_grade,
+            "bollinger_bandwidth": bandwidth, "bollinger_grade": bb_grade,
+            "amplitude_ratio": amp_ratio, "amplitude_grade": amp_grade
+        },
+        "orderflow": {
+            "delta": delta_cur,
+            "delta_strength": delta_strength, "delta_strength_grade": delta_strength_grade,
+            "delta_trend": delta_trend,
+            "divergence": divergence,
+            "active_buy_ratio": active_ratio, "active_buy_grade": active_grade,
+            "avg_trade_size": avg_trade, "avg_trade_grade": at_grade
+        },
+        "volume": {
+            "relative_ratio": rel_vol_ratio, "relative_grade": rel_vol_grade,
+            "trend": vol_trend,
+            "extreme": vol_extreme,
+            "cluster": vol_cluster
+        },
+        "structure": {
+            "swing_structure": swing_struct,
+            "breakout_direction": break_dir, "breakout_effectiveness": break_eff,
+            "short_resistance": short_res, "short_support": short_sup,
+            "main_resistance": main_res, "main_support": main_sup
+        },
+        "micro": {
+            "body_ratio": body_ratio, "body_grade": body_grade,
+            "upper_wick": upper_wick, "lower_wick": lower_wick,
+            "upper_wick_grade": uw_grade, "lower_wick_grade": lw_grade,
+            "pattern": pattern
+        },
+        "energy": {
+            "momentum5": mom5, "momentum10": mom10, "momentum20": mom20,
+            "momentum_acceleration": mom_acc, "momentum_acc_grade": mom_acc_grade,
+            "vwap_deviation": vwap_dev, "vwap_grade": vwap_grade,
+            "volume_price_coordination": vol_price_coord,
+            "energy_exhaustion": energy_exhaust
+        }
+    }
+
+# ==================== 总体价格特征（同步） ====================
+def calc_overall_price_features_sync(symbol):
+    result = {}
+    def fmt_month(ts):
+        return time.strftime("%Y年%m月", time.localtime(ts/1000))
+    def fmt_day(ts):
+        return time.strftime("%Y年%m月%d日", time.localtime(ts/1000))
+
+    monthly = fetch_klines_sync(symbol, "1M", OVERALL_MONTHLY_LIMIT)
+    if monthly:
+        m_count = len(monthly)
+        highs = [k['high'] for k in monthly]
+        lows = [k['low'] for k in monthly]
+        high_val = max(highs)
+        low_val = min(lows)
+        high_idx = highs.index(high_val)
+        low_idx = lows.index(low_val)
+        high_time = fmt_month(monthly[high_idx]['timestamp'])
+        low_time = fmt_month(monthly[low_idx]['timestamp'])
+        current = monthly[-1]['close']
+        if high_val == low_val:
+            pct = 50.0
+        else:
+            pct = (current - low_val) / (high_val - low_val) * 100
+        pct = max(0, min(100, pct))
+        grade = map_price_position(pct)
+        result['long'] = {
+            'count': m_count,
+            'current': current,
+            'high': high_val, 'high_time': high_time,
+            'low': low_val, 'low_time': low_time,
+            'pct': pct, 'grade': grade,
+            'sufficient': m_count >= OVERALL_MONTHLY_LIMIT
+        }
+    else:
+        result['long'] = {'error': True}
+
+    daily_90 = fetch_klines_sync(symbol, "1d", OVERALL_QUARTER_DAYS)
+    if daily_90:
+        d90_count = len(daily_90)
+        highs90 = [k['high'] for k in daily_90]
+        lows90 = [k['low'] for k in daily_90]
+        high_val90 = max(highs90)
+        low_val90 = min(lows90)
+        high_idx90 = highs90.index(high_val90)
+        low_idx90 = lows90.index(low_val90)
+        high_time90 = fmt_day(daily_90[high_idx90]['timestamp'])
+        low_time90 = fmt_day(daily_90[low_idx90]['timestamp'])
+        current = daily_90[-1]['close']
+        if high_val90 == low_val90:
+            pct90 = 50.0
+        else:
+            pct90 = (current - low_val90) / (high_val90 - low_val90) * 100
+        pct90 = max(0, min(100, pct90))
+        grade90 = map_price_position(pct90)
+        result['mid'] = {
+            'count': d90_count,
+            'current': current,
+            'high': high_val90, 'high_time': high_time90,
+            'low': low_val90, 'low_time': low_time90,
+            'pct': pct90, 'grade': grade90,
+            'sufficient': d90_count >= OVERALL_QUARTER_DAYS
+        }
+
+        if len(daily_90) >= OVERALL_MONTH_DAYS:
+            daily_30 = daily_90[-OVERALL_MONTH_DAYS:]
+        else:
+            daily_30 = daily_90
+        d30_count = len(daily_30)
+        highs30 = [k['high'] for k in daily_30]
+        lows30 = [k['low'] for k in daily_30]
+        high_val30 = max(highs30)
+        low_val30 = min(lows30)
+        high_idx30 = highs30.index(high_val30)
+        low_idx30 = lows30.index(low_val30)
+        high_time30 = fmt_day(daily_30[high_idx30]['timestamp'])
+        low_time30 = fmt_day(daily_30[low_idx30]['timestamp'])
+        if high_val30 == low_val30:
+            pct30 = 50.0
+        else:
+            pct30 = (current - low_val30) / (high_val30 - low_val30) * 100
+        pct30 = max(0, min(100, pct30))
+        grade30 = map_price_position(pct30)
+        result['short'] = {
+            'count': d30_count,
+            'current': current,
+            'high': high_val30, 'high_time': high_time30,
+            'low': low_val30, 'low_time': low_time30,
+            'pct': pct30, 'grade': grade30,
+            'sufficient': d30_count >= OVERALL_MONTH_DAYS
+        }
+    else:
+        result['mid'] = {'error': True}
+        result['short'] = {'error': True}
+    return result
+
+# ==================== 完整报告生成（与 analyzer.py 完全一致） ====================
+def generate_full_report(symbol, period_results, overall):
+    lines = []
+    lines.append(f"\n{'='*80}")
+    lines.append(f"📊 市场行为特征分析报告 - {symbol}")
+    lines.append(f"⏱️ 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append('='*80)
+
+    # ----- 总体价格特征 -----
+    lines.append("\n【🌍 总体价格特征】")
+    ov = overall['long']
+    if not ov.get('error'):
+        suff = "" if ov['sufficient'] else f"（实际{ov['count']}个月，不足24个月）"
+        lines.append(f"📅 近2年（月度K线{suff}）:")
+        lines.append(f"   💰 当前价格: {ov['current']}")
+        lines.append(f"   📈 过去 {ov['count']} 个月高点: {ov['high']}（{ov['high_time']}）")
+        lines.append(f"   📉 过去 {ov['count']} 个月低点: {ov['low']}（{ov['low_time']}）")
+        lines.append(f"   📍 当前位置: {ov['pct']:.1f}%（{ov['grade']}）")
+        if ov['pct'] >= 80:
+            lines.append(f"   🔴 解读: 价格处于长周期高位，警惕回调风险。")
+        elif ov['pct'] <= 20:
+            lines.append(f"   🟢 解读: 价格处于长周期低位，可能存在估值修复机会。")
+        else:
+            lines.append(f"   🟡 解读: 价格处于长周期中间区域，方向不明，观望为主。")
+        if not ov['sufficient']:
+            lines.append(f"   ⚠️ 注意：该币种上市仅 {ov['count']} 个月，数据不足24个月。")
+    else:
+        lines.append("📅 近2年（月度K线）：无法获取数据")
+
+    ov = overall['mid']
+    if not ov.get('error'):
+        suff = "" if ov['sufficient'] else f"（实际{ov['count']}天，不足90天）"
+        lines.append(f"\n📅 近3个月（日K线{suff}）:")
+        lines.append(f"   💰 当前价格: {ov['current']}")
+        lines.append(f"   📈 过去 {ov['count']} 天高点: {ov['high']}（{ov['high_time']}）")
+        lines.append(f"   📉 过去 {ov['count']} 天低点: {ov['low']}（{ov['low_time']}）")
+        lines.append(f"   📍 当前位置: {ov['pct']:.1f}%（{ov['grade']}）")
+        if ov['pct'] >= 80:
+            lines.append(f"   🔴 解读: 价格处于中周期高位，短期超买，追高风险大。")
+        elif ov['pct'] <= 20:
+            lines.append(f"   🟢 解读: 价格处于中周期低位，超卖反弹概率增加。")
+        else:
+            lines.append(f"   🟡 解读: 价格处于中周期正常区间，方向不明。")
+        if not ov['sufficient']:
+            lines.append(f"   ⚠️ 注意：该币种上市仅 {ov['count']} 天，数据不足90天。")
+    else:
+        lines.append("\n📅 近3个月（日K线）：无法获取数据")
+
+    ov = overall['short']
+    if not ov.get('error'):
+        suff = "" if ov['sufficient'] else f"（实际{ov['count']}天，不足30天）"
+        lines.append(f"\n📅 近1个月（日K线{suff}）:")
+        lines.append(f"   💰 当前价格: {ov['current']}")
+        lines.append(f"   📈 过去 {ov['count']} 天高点: {ov['high']}（{ov['high_time']}）")
+        lines.append(f"   📉 过去 {ov['count']} 天低点: {ov['low']}（{ov['low_time']}）")
+        lines.append(f"   📍 当前位置: {ov['pct']:.1f}%（{ov['grade']}）")
+        if ov['pct'] >= 80:
+            lines.append(f"   🔴 解读: 价格处于短期高位，注意超买风险。")
+        elif ov['pct'] <= 20:
+            lines.append(f"   🟢 解读: 价格处于短期低位，超跌反弹可能。")
+        else:
+            lines.append(f"   🟡 解读: 价格处于短期正常区间。")
+        if not ov['sufficient']:
+            lines.append(f"   ⚠️ 注意：该币种上市仅 {ov['count']} 天，数据不足30天。")
+    else:
+        lines.append("\n📅 近1个月（日K线）：无法获取数据")
+
+    # ----- 四周期状态对比表 -----
+    lines.append("\n【📈 四周期状态对比表】")
+    header = f"{'周期':<6} {'趋势方向':<22} {'强度':<10} {'价格位置':<10} {'波动状态':<10} {'结构':<12} {'综合评语'}"
+    lines.append(header)
+    lines.append("-"*110)
+    period_configs = {p["name"]: p for p in PERIODS}
+    for period_name, data in period_results.items():
+        if data is None:
+            lines.append(f"{period_name:<6} 数据不足")
+            continue
+        t = data['trend']
+        short_dir = t['short']['dir'][:2] if t['short']['dir'] else '--'
+        mid_dir = t['mid']['dir'][:2] if t['mid']['dir'] else '--'
+        long_dir = t['long']['dir'][:2] if t['long']['dir'] else '--'
+        trend_str = f"{short_dir}/{mid_dir}/{long_dir}"
+        strength = f"{t['strength']['score']:.0f}%({t['strength']['grade'][:2]})" if t['strength']['score'] else '--'
+        price_pos = f"{t['price_position']['pct']:.0f}%({t['price_position']['grade'][:2]})" if t['price_position']['pct'] else '--'
+        vol_exp = data['volatility']['expansion_grade'][:4] if data['volatility']['expansion_grade'] else '--'
+        struct = data['structure']['swing_structure'][:8] if data['structure']['swing_structure'] else '--'
+        comment = ""
+        if period_name == "15m":
+            if t['short']['dir'] == "上涨" and t['price_position']['pct']>70:
+                comment = "短多但高位"
+            elif t['short']['dir'] == "下跌" and t['price_position']['pct']<30:
+                comment = "短空超卖"
+            else:
+                comment = "方向不明"
+        elif period_name == "1h":
+            if t['mid']['dir'] == "上涨" and t['strength']['score']>50:
+                comment = "中周期偏多"
+            elif t['mid']['dir'] == "下跌" and t['strength']['score']>50:
+                comment = "中周期偏空"
+            else:
+                comment = "中周期震荡"
+        elif period_name == "4h":
+            if t['long']['dir'] == "下跌" and t['price_position']['pct']<30:
+                comment = "长线空头"
+            elif t['long']['dir'] == "上涨" and t['price_position']['pct']>70:
+                comment = "长线多头"
+            else:
+                comment = "长线观望"
+        else:
+            if t['long']['dir'] == "下跌":
+                comment = "趋势向下"
+            elif t['long']['dir'] == "上涨":
+                comment = "趋势向上"
+            else:
+                comment = "趋势不明"
+        lines.append(f"{period_name:<6} {trend_str:<22} {strength:<10} {price_pos:<10} {vol_exp:<10} {struct:<12} {comment}")
+    lines.append("-"*110)
+
+    # ----- 各周期详细分析 -----
+    for period_name, data in period_results.items():
+        if data is None:
+            continue
+        cfg = period_configs.get(period_name, {})
+        lines.append(f"\n{'='*80}")
+        lines.append(f"【🔍 {period_name}周期详细分析】")
+        lines.append('='*80)
+        t = data['trend']
+        lines.append(f"\n📌 趋势方向:")
+        lines.append(f"   短期({cfg.get('short', '?')}根): {t['short']['dir']} (斜率 {t['short']['slope']:.2f})")
+        lines.append(f"   中期({cfg.get('mid', '?')}根): {t['mid']['dir']} (斜率 {t['mid']['slope']:.2f})")
+        lines.append(f"   长期({cfg.get('long', '?')}根): {t['long']['dir']} (斜率 {t['long']['slope']:.2f})")
+        lines.append(f"   → 综合: {t['short']['dir']}/{t['mid']['dir']}/{t['long']['dir']}")
+        lines.append(f"\n💪 趋势强度: {t['strength']['score']:.1f}% ({t['strength']['grade']})")
+        if t['strength']['score'] > 70:
+            lines.append(f"   🔥 解读: 趋势强劲，顺势交易胜率高。")
+        elif t['strength']['score'] < 30:
+            lines.append(f"   ❄️ 解读: 趋势极弱，宜观望或区间操作。")
+        else:
+            lines.append(f"   🌀 解读: 趋势一般，等待方向明朗。")
+        lines.append(f"\n📏 价格位置: {t['price_position']['pct']:.1f}% ({t['price_position']['grade']})")
+        if t['price_position']['pct'] > 80:
+            lines.append(f"   ⚠️ 解读: 价格处于近期高位，追高风险大。")
+        elif t['price_position']['pct'] < 20:
+            lines.append(f"   ✅ 解读: 价格处于近期低位，可能存在支撑。")
+        else:
+            lines.append(f"   ➖ 解读: 价格处于中间区域，无极端信号。")
+        v = data['volatility']
+        lines.append(f"\n🌊 波动特征:")
+        lines.append(f"   ATR: {v['atr']:.2f} (过去平均 {v['atr_avg']:.2f})")
+        lines.append(f"   波动扩张率: {v['expansion_rate']:.1f}% ({v['expansion_grade']})")
+        if v['expansion_rate'] > 20:
+            lines.append(f"   🔔 解读: 波动放大，行情可能加速。")
+        elif v['expansion_rate'] < -20:
+            lines.append(f"   😴 解读: 波动收缩，市场低迷，等待变盘。")
+        else:
+            lines.append(f"   🔄 解读: 波动正常，维持原有节奏。")
+        lines.append(f"   布林带宽度: {v['bollinger_bandwidth']:.2f}% ({v['bollinger_grade']})")
+        if "压缩" in v['bollinger_grade']:
+            lines.append(f"   🎯 解读: 价格横盘蓄力，即将选择方向。")
+        lines.append(f"   振幅比: {v['amplitude_ratio']:.2f}倍 ({v['amplitude_grade']})")
+        if data['orderflow']['delta'] is not None:
+            of = data['orderflow']
+            lines.append(f"\n💸 订单流特征:")
+            lines.append(f"   Volume Delta: {of['delta']:.0f} ({'主动买强' if of['delta']>0 else '主动卖强' if of['delta']<0 else '平衡'})")
+            lines.append(f"   Delta强度: {of['delta_strength']:.1f}% ({of['delta_strength_grade']})")
+            lines.append(f"   Delta趋势: {of['delta_trend']}")
+            lines.append(f"   背离: {'有' if of['divergence'] else '无'}")
+            if of['divergence']:
+                lines.append(f"   ⚠️ 解读: 价格与主动买卖盘背离，警惕反转。")
+            lines.append(f"   主动买入比例: {of['active_buy_ratio']:.1f}% ({of['active_buy_grade']})")
+            if of['avg_trade_size']:
+                lines.append(f"   平均单笔成交: {of['avg_trade_size']:.3f} ({of['avg_trade_grade']})")
+        vol = data['volume']
+        lines.append(f"\n📊 成交量特征:")
+        lines.append(f"   相对成交量: {vol['relative_ratio']:.2f}倍 ({vol['relative_grade']})")
+        if vol['relative_ratio'] > 1.5:
+            lines.append(f"   🔥 解读: 明显放量，资金活跃。")
+        elif vol['relative_ratio'] < 0.5:
+            lines.append(f"   💤 解读: 缩量，市场冷清。")
+        lines.append(f"   成交量趋势: {vol['trend']}")
+        lines.append(f"   极值: {'是' if vol['extreme'] else '否'}  聚类: {'有' if vol['cluster'] else '无'}")
+        s = data['structure']
+        lines.append(f"\n🏗️ 结构特征:")
+        lines.append(f"   高低点结构: {s['swing_structure']}")
+        lines.append(f"   突破: {s['breakout_direction']} ({s['breakout_effectiveness']})")
+        lines.append(f"   短期阻力/支撑: {s['short_resistance']:.2f} / {s['short_support']:.2f}")
+        if data['micro']['body_ratio'] is not None:
+            m = data['micro']
+            lines.append(f"\n🕯️ 微观形态:")
+            lines.append(f"   实体比例: {m['body_ratio']:.1f}% ({m['body_grade']})")
+            lines.append(f"   上影线: {m['upper_wick']:.1f}% ({m['upper_wick_grade']})")
+            lines.append(f"   下影线: {m['lower_wick']:.1f}% ({m['lower_wick_grade']})")
+            lines.append(f"   K线形态: {m['pattern']}")
+            if "吞没" in m['pattern']:
+                lines.append(f"   🚨 解读: 出现经典反转形态，注意趋势可能变化。")
+        e = data['energy']
+        lines.append(f"\n⚡ 能量效率:")
+        lines.append(f"   动量10: {e['momentum10']:.2f}  加速度: {e['momentum_acceleration']:.2f}({e['momentum_acc_grade']})")
+        lines.append(f"   VWAP位置: {e['vwap_deviation']:.2f}倍ATR ({e['vwap_grade']})")
+        lines.append(f"   量价配合: {e['volume_price_coordination']}")
+        lines.append(f"   能量衰竭: {'有' if e['energy_exhaustion'] else '无'}")
+        if e['energy_exhaustion']:
+            lines.append(f"   ⚠️ 解读: 价格创新高但动能衰减，警惕回调。")
+
+    # ----- 短期观察建议 -----
+    lines.append(f"\n{'='*80}")
+    lines.append("【📋 短期观察建议（基于15分钟和1小时）】")
+    lines.append('='*80)
+    data_15m = period_results.get("15m")
+    data_1h = period_results.get("1h")
+    if data_15m and data_1h:
+        t15 = data_15m['trend']
+        t1h = data_1h['trend']
+        o15 = data_15m['orderflow']
+        v15 = data_15m['volatility']
+        micro15 = data_15m['micro']
+        lines.append(f"1️⃣ 方向判断: 15分钟{ t15['short']['dir'] }（斜率 {t15['short']['slope']:.2f}），1小时中期{ t1h['mid']['dir'] }。")
+        if t15['short']['dir'] == "上涨" and t1h['mid']['dir'] == "下跌":
+            lines.append(f"   → 短线反弹受制于中周期下跌趋势，追多需谨慎。")
+        elif t15['short']['dir'] == "下跌" and t1h['mid']['dir'] == "上涨":
+            lines.append(f"   → 短线回调但中周期向上，可等待企稳后低吸。")
+        else:
+            lines.append(f"   → 周期方向一致，顺势交易。")
+        if o15['delta'] is not None:
+            lines.append(f"2️⃣ 动能评估: Delta = {o15['delta']:.0f}（{'主动买强' if o15['delta']>0 else '主动卖强'}），强度 {o15['delta_strength']:.1f}%({o15['delta_strength_grade']})。")
+            if o15['delta_strength'] > 30 and o15['delta'] > 0:
+                lines.append(f"   → 主动买盘强劲，短期多头动能充足。")
+            elif o15['delta_strength'] > 30 and o15['delta'] < 0:
+                lines.append(f"   → 主动卖盘强劲，短期空头占优。")
+            else:
+                lines.append(f"   → 多空力量均衡，方向不明。")
+        lines.append(f"3️⃣ 波动状态: 布林带宽度 {v15['bollinger_bandwidth']:.2f}%（{v15['bollinger_grade']}），波动扩张率 {v15['expansion_rate']:.1f}%。")
+        if "压缩" in v15['bollinger_grade']:
+            lines.append(f"   → 变盘在即，突破方向有待确认。")
+        else:
+            lines.append(f"   → 正常波动，维持当前趋势。")
+        if micro15['body_ratio'] is not None:
+            lines.append(f"4️⃣ 微观形态: 最新K线{'阳线' if micro15['body_ratio']>0 else '阴线'}，实体{micro15['body_grade']}，{micro15['pattern']}。")
+            if "吞没" in micro15['pattern']:
+                lines.append(f"   → 出现反转形态，短期方向可能改变。")
+        lines.append(f"5️⃣ 综合策略: 多周期方向{'一致' if t15['short']['dir']==t1h['mid']['dir'] else '矛盾'}，建议等待方向确认。")
+    else:
+        lines.append("⚠️ 无法获取15分钟或1小时数据，暂时无法生成短期建议。")
+
+    return "\n".join(lines)
+
+# ==================== 单个币种完整分析（新） ====================
+def analyze_single_symbol(symbol):
+    """生成单个币种的完整市场分析报告（文本）"""
+    period_results = {}
+    for period_cfg in PERIODS:
+        klines = fetch_klines_sync(symbol, period_cfg["interval"], period_cfg["min_klines"])
+        if klines is None:
+            period_results[period_cfg["name"]] = None
+        else:
+            period_results[period_cfg["name"]] = analyze_period(klines, period_cfg)
+    overall = calc_overall_price_features_sync(symbol)
+    return generate_full_report(symbol, period_results, overall)
+
+# ======================== 保留原有的选币逻辑和对外接口 ========================
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+}
+MAIN_STREAM_SYMBOLS = {
+    "BTCUSDT", "ETHUSDT", "BNBUSDT",
+    "SOLUSDT", "XRPUSDT", "ADAUSDT",
+    "DOGEUSDT", "AVAXUSDT", "TRXUSDT"
+}
+
 def fetch_url(url, timeout=5):
     try:
-        time.sleep(random.uniform(REQUEST_DELAY_MIN, REQUEST_DELAY_MAX))
+        time.sleep(random.uniform(0.3, 0.5))
         resp = requests.get(url, headers=HEADERS, timeout=timeout)
         resp.raise_for_status()
         return resp.json()
     except:
-        return None  # 改为None，适配字典结构
+        return None
 
-# ========================
-# 数据抓取 —— 【这里正确改成实时资金费】
-# ========================
-def fetch_all_for_symbol(symbol):
-    with ThreadPoolExecutor(PER_SYMBOL_WORKERS) as executor:
-        tasks = {
-            executor.submit(fetch_url, f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={SHORT_K_INTERVAL}&limit={SHORT_K_LIMIT}"): "short_k",
-            executor.submit(fetch_url, f"https://fapi.binance.com/futures/data/openInterestHist?symbol={symbol}&period={SHORT_OI_PERIOD}&limit={SHORT_OI_LIMIT}"): "short_oi",
-            executor.submit(fetch_url, f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={LONG_K_INTERVAL}&limit={LONG_K_LIMIT}"): "long_k",
-            executor.submit(fetch_url, f"https://fapi.binance.com/futures/data/openInterestHist?symbol={symbol}&period={LONG_OI_PERIOD}&limit={LONG_OI_LIMIT}"): "long_oi",
-            executor.submit(fetch_url, f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}"): "funding",  # ✅ 正确实时接口
-        }
-        res = {}
-        for future in as_completed(tasks):
-            key = tasks[future]
-            res[key] = future.result()
-    return (
-        res.get("short_k", []), res.get("short_oi", []),
-        res.get("long_k", []), res.get("long_oi", []),
-        res.get("funding", None)  # ✅ 返回字典
-    )
-
-# ========================
-# 【✅ 最优新版趋势算法】幅度 + 结构 + 动能 三合一
-# ========================
-def get_trend(k_data):
-    if len(k_data) < 6:
-        return TREND_RANGE
-
-    closes = [float(i[4]) for i in k_data]
-    highs = [float(i[2]) for i in k_data]
-    lows = [float(i[3]) for i in k_data]
-
-    first_close = closes[0]
-    last_close = closes[-1]
-    change_pct = (last_close - first_close) / first_close * 100
-
-    # 结构判断：高点抬高 / 低点降低
-    higher_highs = highs[-1] > max(highs[:-1])
-    lower_lows = lows[-1] < min(lows[:-1])
-
-    # 近期强弱（最后3根决定当前动能）
-    recent_chg = (closes[-1] - closes[-4]) / closes[-4] * 100 if len(closes)>=4 else 0
-
-    # ======================
-    # 强趋势（幅度优先）
-    # ======================
-    if change_pct > 15:
-        return TREND_STRONG_UP
-    if change_pct < -15:
-        return TREND_STRONG_DOWN
-
-    # ======================
-    # 弱趋势（结构+幅度）
-    # ======================
-    if change_pct > 2 and higher_highs:
-        return TREND_WEAK_UP
-    if change_pct < -2 and lower_lows:
-        return TREND_WEAK_DOWN
-
-    # ======================
-    # 近期动能辅助（防止横盘误判）
-    # ======================
-    if recent_chg > 3:
-        return TREND_WEAK_UP
-    if recent_chg < -3:
-        return TREND_WEAK_DOWN
-
-    # 都不满足 → 真正横盘
-    return TREND_RANGE
-
-# ========================
-# 持仓状态
-# ========================
-def get_oi_state(oi_data, symbol):
-    if len(oi_data) < 2:
-        return OI_STABLE
-    vs = [float(x["sumOpenInterest"]) for x in oi_data]
-    if vs[0] == 0:
-        return OI_STABLE
-    delta = (vs[-1] - vs[0]) / vs[0]
-
-    if symbol in MAIN_STREAM_SYMBOLS:
-        if delta > 0.01:
-            return OI_STRONG_INCREASE
-        elif delta > 0:
-            return OI_INCREASE
-        elif delta < -0.01:
-            return OI_STRONG_DECREASE
-        elif delta < 0:
-            return OI_DECREASE
-    else:
-        if delta > 1.0:
-            return OI_STRONG_INCREASE
-        elif delta > 0:
-            return OI_INCREASE
-        elif delta < -0.5:
-            return OI_STRONG_DECREASE
-        elif delta < 0:
-            return OI_DECREASE
-    return OI_STABLE
-
-# ========================
-# 资金费率 —— 【修复：调整非主流币阈值，适配实际费率】
-# ========================
-def get_funding_state(f_data, symbol):
-    if not f_data:
-        return FUNDING_NEUTRAL
-    v = float(f_data.get("lastFundingRate", 0))  # ✅ 正确字段
-    
-    if symbol in MAIN_STREAM_SYMBOLS:
-        if v > 0.0005:  # 万分之5
-            return FUNDING_LONG_BIAS
-        elif v < -0.0005:  # 万分之5
-            return FUNDING_SHORT_BIAS
-    else:
-        if v > 0.01:  # 千分之1（原0.01过高）
-            return FUNDING_EXTREME_LONG
-        elif v > 0.001:  # 万分之1
-            return FUNDING_LONG_BIAS
-        elif v < -0.01:  # 千分之1（原-0.01过高）
-            return FUNDING_EXTREME_SHORT
-        elif v < -0.001:  # 万分之1
-            return FUNDING_SHORT_BIAS
-    return FUNDING_NEUTRAL
-
-# ========================
-# 信号检测（你的专业版）
-# ========================
-def detect_signal(short_trend, long_trend, short_oi, long_oi, funding, chg):
-    signals = []
-    if abs(chg) > 50:
-        signals.append("极端行情（24小时波动大于50%）")
-    if (short_trend in TREND_UP_STATES and long_trend in TREND_UP_STATES) and (short_oi in OI_INCREASE_STATES and long_oi in OI_INCREASE_STATES):
-        signals.append("量价齐升，资金推动上涨")
-    if (short_trend in TREND_STRONG_STATES and long_trend in TREND_STRONG_STATES) and (short_oi in OI_INCREASE_STATES and long_oi in OI_INCREASE_STATES):
-        signals.append("放量大涨，趋势强化")
-    if funding in FUNDING_LONG_STATES and (short_trend in TREND_UP_STATES and long_trend in TREND_UP_STATES):
-        signals.append("资金费多头支付，市场上涨，多头过热，小心回调")
-    if funding in FUNDING_SHORT_STATES and (short_trend in TREND_DOWN_STATES and long_trend in TREND_DOWN_STATES):
-        signals.append("资金费空头支付，市场下跌，空头过热，小心拉盘")
-    if short_trend in TREND_UP_STATES and long_trend in TREND_DOWN_STATES:
-        signals.append("短期上涨 长期下跌（背离，变盘信号，反弹不可靠，大概率还要跌）")
-    if short_trend in TREND_DOWN_STATES and long_trend in TREND_UP_STATES:
-        signals.append("短期下跌 长期上涨（背离，变盘信号，回调是机会，大概率继续涨")
-    return signals if signals else ["中性"]
-
-# ========================
-# 冲突检测（你的专业版）
-# ========================
-def detect_conflict(short_trend, long_trend, short_oi, long_oi, funding, chg):
-    conflicts = []
-    if abs(chg) > 100:
-        conflicts.append("超级极端波动（24小时波动大于100%）")
-    if (short_trend in TREND_UP_STATES or long_trend in TREND_UP_STATES) and (short_oi in OI_DECREASE_STATES or long_oi in OI_DECREASE_STATES):
-        conflicts.append("上涨但持仓下降，无量上涨、主力出货")
-    if (short_trend in TREND_DOWN_STATES or long_trend in TREND_DOWN_STATES) and (short_oi in OI_INCREASE_STATES or long_oi in OI_INCREASE_STATES):
-        conflicts.append("下跌但持仓增加，有人抄底、逆势加仓、可能要变盘")
-    if funding in FUNDING_LONG_STATES and (short_trend in TREND_DOWN_STATES or long_trend in TREND_DOWN_STATES):
-        conflicts.append("多头支付资金费与价格下跌背离，多单被套，接下来会被砸盘，还会继续跌")
-    if funding in FUNDING_SHORT_STATES and (short_trend in TREND_UP_STATES or long_trend in TREND_UP_STATES):
-        conflicts.append("空头支付资金与价格上涨背离，空单被套，接下来会被拉涨，逼空行情")
-    return conflicts if conflicts else ["无明显冲突"]
-
-# ========================
-# 评分
-# ========================
-def calc_score(d, short_trend, long_trend, short_oi, long_oi):
-    score = math.log(float(d["quoteVolume"]) + 1) + abs(float(d["priceChangePercent"])) / 2
-    if short_trend in TREND_STRONG_STATES:
-        score += 2
-    if long_trend in TREND_STRONG_STATES:
-        score += 3
-    if short_oi in OI_INCREASE_STATES:
-        score += 2
-    if long_oi in OI_INCREASE_STATES:
-        score += 3
-    return round(score, 2)
-
-# ========================
-# 内存过滤（新增：清理24小时前的内存记录）
-# ========================
 def clean_expired_memory(memory):
     current = now()
     cleaned = {}
     for sym, rec in memory.items():
         try:
             last_time = parse_time(rec["last_time"])
-            # 保留24小时内的记录
             if (current - last_time).total_seconds() < 86400:
                 cleaned[sym] = rec
             else:
-                # 重置24小时计数
                 cleaned[sym] = {"symbol": sym, "count_24h": 0, "last_time": current.isoformat()}
         except:
             cleaned[sym] = {"symbol": sym, "count_24h": 0, "last_time": current.isoformat()}
     return cleaned
 
-def filter_by_memory(results, memory):
-    current = now()
-    valid = []
-    for item in results:
-        sym = item["symbol"]
-        rec = memory.get(sym)
-        if not rec:
-            valid.append(item)
-            continue
-        cnt = rec.get("count_24h", 0)
-        if cnt >= MAX_PER_SYMBOL_24H:
-            continue
-        last = parse_time(rec["last_time"])
-        delta = (current - last).total_seconds() / 60
-        if delta < COOLDOWN_MINUTES:
-            continue
-        if delta < SOFT_COOLDOWN_MINUTES:
-            item["score"] *= 0.5
-        valid.append(item)
-    return valid
-
-# ========================
-# 文案生成（已加振幅）
-# ========================
-def build_topic_text(d, short_trend, long_trend, short_oi, long_oi, funding, funding_rate_val, signals, conflicts):
-    trend_map = {
-        TREND_STRONG_UP: "强势极端上涨",
-        TREND_WEAK_UP: "震荡上行",
-        TREND_RANGE: "横盘震荡",
-        TREND_WEAK_DOWN: "震荡下行",
-        TREND_STRONG_DOWN: "单边极端下跌"
-    }
-    oi_map = {
-        OI_INCREASE: "持仓增加，资金进场",
-        OI_STRONG_INCREASE: "持仓大增，资金大幅进场",
-        OI_DECREASE: "持仓下降，资金离场",
-        OI_STRONG_DECREASE: "持仓大减，资金大幅离场",
-        OI_STABLE: "持仓变化不明显"
-    }
-    fnd_map = {
-        FUNDING_LONG_BIAS: "市场当前偏多头主导，多头支付资金费",
-        FUNDING_EXTREME_LONG: "市场当前极端多头主导，多头支付资金费",
-        FUNDING_SHORT_BIAS: "市场当前偏空头主导，空头支付资金费",
-        FUNDING_EXTREME_SHORT: "市场当前极端空头主导，空头支付资金费",
-        FUNDING_NEUTRAL: "市场当前多空平衡"
-    }
-    price = f"{float(d['lastPrice']):.8f}".rstrip("0").rstrip(".")
-    chg = round(float(d["priceChangePercent"]), 2)
-    high = d["highPrice"]
-    low = d["lowPrice"]
-    amplitude = round((float(high) - float(low)) / float(low) * 100, 2)
-    s_trend = trend_map.get(short_trend, short_trend)
-    l_trend = trend_map.get(long_trend, long_trend)
-    s_oi = oi_map.get(short_oi, short_oi)
-    l_oi = oi_map.get(long_oi, long_oi)
-    fund = fnd_map.get(funding, funding)
-    sig = "；".join(signals)
-    conf = "；".join(conflicts)
-    funding_val_str = f"{funding_rate_val:.4%}"
-
-    return (
-        f"{d['symbol']}，价格{price}，24h涨跌幅{chg}%，24h振幅{amplitude}%（最高{high}，最低{low}）\n"
-        f"市场趋势：过去3小时{s_trend}，过去24小时{l_trend}。\n"
-        f"持仓情况：过去3小时{s_oi}，过去24小时{l_oi}\n"
-        f"资金费率情况：{fund}（当前费率：{funding_val_str}）。\n"
-        f"市场信号：{sig}\n"
-        f"市场信号冲突：{conf}"
-    )
-
-# ========================
-# 单个币种完整分析（给手动模式专用，完整逻辑不变）
-# ========================
-def analyze_single_symbol(symbol):
-    # 获取24h行情
-    ticker_url = f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={symbol}"
-    selected_item = fetch_url(ticker_url)
-    if not selected_item:
-        return None
-
-    # 获取完整深度数据
-    short_k, short_oi_data, long_k, long_oi_data, funding_data = fetch_all_for_symbol(symbol)
-
-    # 分析
-    short_trend = get_trend(short_k)
-    long_trend = get_trend(long_k)
-    short_oi = get_oi_state(short_oi_data, symbol)
-    long_oi = get_oi_state(long_oi_data, symbol)
-    funding_st = get_funding_state(funding_data, symbol)
-    funding_val = float(funding_data.get("lastFundingRate", 0)) if funding_data else 0.0
-    chg = float(selected_item["priceChangePercent"])
-    sig = detect_signal(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
-    conf = detect_conflict(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
-    score = calc_score(selected_item, short_trend, long_trend, short_oi, long_oi)
-
-    # 生成完整文本
-    return build_topic_text(
-        selected_item, short_trend, long_trend,
-        short_oi, long_oi, funding_st,
-        funding_val, sig, conf
-    )
-
-# ========================
-# 主流程（自动模式用）
-# ========================
 def run_topic(target_symbol=None):
-    # ============= 修复核心：手动模式传入交易对 =============
+    """
+    自动模式：随机选币生成深度报告
+    手动模式：指定交易对生成深度报告
+    返回格式：{"symbol": str, "text": str, "change": float, "volume_ratio": float, "news": str}
+    """
+    # 手动模式
     if target_symbol and target_symbol.strip():
         topic_text = analyze_single_symbol(target_symbol)
         if not topic_text:
-            return {"symbol": target_symbol, "text": "获取行情失败"}
-        
+            return {"symbol": target_symbol, "text": "获取行情失败", "change": 0, "volume_ratio": 1.0, "news": ""}
         return {
             "symbol": target_symbol,
             "text": topic_text,
@@ -433,73 +1096,62 @@ def run_topic(target_symbol=None):
             "news": ""
         }
 
-    # ============= 以下是你原来的自动逻辑，100% 不变 =============
+    # 自动模式：原选币逻辑
     ticker = fetch_url("https://fapi.binance.com/fapi/v1/ticker/24hr")
     exchange_info = fetch_url("https://fapi.binance.com/fapi/v1/exchangeInfo")
     if not ticker or not exchange_info:
         print("❌ 基础行情数据抓取失败")
         return None
-    
-    # 获取可交易币种
     active = {s["symbol"] for s in exchange_info.get("symbols", []) if s["status"] == "TRADING"}
     usdt = [d for d in ticker if d["symbol"].endswith("USDT") and d["symbol"] in active]
-
-    # 按涨跌幅绝对值排序 → 取前20 → 随机选1个
     usdt_sorted = sorted(usdt, key=lambda x: abs(float(x["priceChangePercent"])), reverse=True)
     top20 = usdt_sorted[:20]
     selected_item = random.choice(top20)
     symbol = selected_item["symbol"]
 
-    # 只对这 1 个币获取深度数据
-    short_k, short_oi_data, long_k, long_oi_data, funding_data = fetch_all_for_symbol(symbol)
-
-    # 后续分析逻辑 100% 不变
-    short_trend = get_trend(short_k)
-    long_trend = get_trend(long_k)
-    short_oi = get_oi_state(short_oi_data, symbol)
-    long_oi = get_oi_state(long_oi_data, symbol)
-    funding_st = get_funding_state(funding_data, symbol)
-    funding_val = float(funding_data.get("lastFundingRate", 0)) if funding_data else 0.0
-    chg = float(selected_item["priceChangePercent"])
-    sig = detect_signal(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
-    conf = detect_conflict(short_trend, long_trend, short_oi, long_oi, funding_st, chg)
-    score = calc_score(selected_item, short_trend, long_trend, short_oi, long_oi)
-
-    # 包装成结果结构
-    selected = {
-        "symbol": symbol, "raw": selected_item,
-        "short_trend": short_trend, "long_trend": long_trend,
-        "short_oi": short_oi, "long_oi": long_oi,
-        "funding": funding_st, "funding_val": funding_val,
-        "signal": sig, "conflict": conf, "score": score
-    }
-
-    # 内存过滤逻辑不变
+    # 内存过滤：限制同一币种每天发文次数
     memory_list = load_json(HISTORY_FILE)
     memory = {m["symbol"]: m for m in memory_list}
     memory = clean_expired_memory(memory)
-
-    # 更新内存
     rec = memory.get(symbol, {"symbol": symbol, "count_24h": 0})
+    if rec.get("count_24h", 0) >= MAX_PER_SYMBOL_24H:
+        # 已达上限，重新选择
+        for _ in range(10):
+            symbol = random.choice([d["symbol"] for d in top20])
+            rec = memory.get(symbol, {"symbol": symbol, "count_24h": 0})
+            if rec.get("count_24h", 0) < MAX_PER_SYMBOL_24H:
+                break
+    # 冷却检查
+    last_time = rec.get("last_time")
+    if last_time:
+        delta = (now() - parse_time(last_time)).total_seconds() / 60
+        if delta < COOLDOWN_MINUTES:
+            # 冷却期内不能发文，直接返回空
+            return None
+    # 更新内存
     rec["last_time"] = now().isoformat()
-    rec["count_24h"] += 1
+    rec["count_24h"] = rec.get("count_24h", 0) + 1
     memory[symbol] = rec
     save_json(HISTORY_FILE, list(memory.values()))
 
-    # 生成文案不变
-    topic_text = build_topic_text(
-        selected_item, short_trend, long_trend,
-        short_oi, long_oi, funding_st,
-        funding_val, sig, conf
-    )
+    # 生成深度报告
+    topic_text = analyze_single_symbol(symbol)
+    if not topic_text:
+        return None
 
     print("\n" + "="*50)
     print(f"✅ 选中交易对：{symbol}")
     print(topic_text)
     print("="*50 + "\n")
 
-    # 返回格式完全兼容 ai_core / app.py
-    topic_dict = {
+    save_json(OUTPUT_FILE, [{
+        "symbol": symbol,
+        "time": now().isoformat(),
+        "text": topic_text,
+        "score": random.uniform(0, 100)
+    }])
+
+    return {
         "symbol": symbol,
         "text": topic_text,
         "change": float(selected_item["priceChangePercent"]),
@@ -507,22 +1159,11 @@ def run_topic(target_symbol=None):
         "news": ""
     }
 
-    save_json(OUTPUT_FILE, [{
-        "symbol": symbol,
-        "time": now().isoformat(),
-        "text": topic_text,
-        "score": score
-    }])
-
-    return topic_dict
-
-
-# 手动输入单个交易对获取数据（给手动模式用）
 def get_single_symbol_topic(symbol):
+    """手动模式专用接口（与原有兼容）"""
     topic_text = analyze_single_symbol(symbol)
     if not topic_text:
         return {"text": "获取失败"}
-    
     return {
         "symbol": symbol,
         "text": topic_text,
@@ -530,7 +1171,6 @@ def get_single_symbol_topic(symbol):
         "volume_ratio": 1.0,
         "news": ""
     }
-
 
 if __name__ == "__main__":
     run_topic()
