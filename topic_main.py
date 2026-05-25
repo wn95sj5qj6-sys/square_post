@@ -24,13 +24,13 @@ SOFT_COOLDOWN_MINUTES = 120
 # ======================== 市场行为分析器参数配置 ========================
 # 周期定义（名称, K线间隔, 短期窗口, 中期窗口, 长期窗口, 最小K线数, 是否计算订单流, 是否计算微观形态）
 PERIODS = [
-    {"name": "15m", "interval": "15m", "short": 10, "mid": 20, "long": 50,
+    {"name": "15m", "interval": "15m", "short": 2, "mid": 4, "long": 8,
      "min_klines": 100, "calc_orderflow": True, "calc_micro": True},
-    {"name": "1h",  "interval": "1h",  "short": 10, "mid": 20, "long": 50,
+    {"name": "1h",  "interval": "1h",  "short": 4, "mid": 8, "long": 24,
      "min_klines": 100, "calc_orderflow": True, "calc_micro": True},
-    {"name": "4h",  "interval": "4h",  "short": 10, "mid": 20, "long": 50,
+    {"name": "4h",  "interval": "4h",  "short": 12, "mid": 18, "long": 24,
      "min_klines": 100, "calc_orderflow": False, "calc_micro": False},
-    {"name": "1d",  "interval": "1d",  "short": 10, "mid": 20, "long": 50,
+    {"name": "1d",  "interval": "1d",  "short": 7, "mid": 15, "long": 30,
      "min_klines": 100, "calc_orderflow": False, "calc_micro": False},
 ]
 
@@ -41,26 +41,26 @@ OVERALL_MONTH_DAYS = 30      # 近1个月日线根数
 
 # 通用阈值
 TREND_SLOPE_THRESHOLD_RATIO = 0.0001   # 趋势方向斜率阈值系数
-EFFICIENCY_WINDOW = 14                 # 趋势强度窗口
-ATR_PERIOD = 14                        # ATR周期
-ATR_COMPARE_WINDOW = 20                # ATR比较窗口
-BOLL_PERIOD = 20                       # 布林带周期
+EFFICIENCY_WINDOW = 7                  # 趋势强度窗口
+ATR_PERIOD = 7                        # ATR周期
+ATR_COMPARE_WINDOW = 11                # ATR比较窗口
+BOLL_PERIOD = 11                       # 布林带周期
 BOLL_STD_MULT = 2                      # 布林带标准差倍数
 VOLUME_MA_WINDOW = 20                  # 成交量均线窗口
 HIGH_VOLUME_RATIO = 1.2                # 放量阈值
 LOW_VOLUME_RATIO = 0.8                 # 缩量阈值
 AMPLITUDE_HIGH_RATIO = 2.0             # 异常振幅阈值
 DELTA_TREND_WINDOW = 5                 # Delta趋势窗口
-DIVERGENCE_LOOKBACK = 20               # 背离检测窗口
-ENERGY_EXHAUSTION_PRICE_WINDOW = 10    # 价格创新高窗口
+DIVERGENCE_LOOKBACK = 11               # 背离检测窗口
+ENERGY_EXHAUSTION_PRICE_WINDOW = 7    # 价格创新高窗口
 ENERGY_EXHAUSTION_DELTA_DOWN = 3       # Delta连续下降窗口
 
 # ======================== 等级映射函数 ========================
 def map_trend_strength(score):
-    if score >= 80: return "极强"
-    if score >= 60: return "较强"
-    if score >= 40: return "中等"
-    if score >= 20: return "较弱"
+    if score >= 70: return "极强"
+    if score >= 50: return "较强"
+    if score >= 30: return "中等"
+    if score >= 10: return "较弱"
     return "极弱"
 
 def map_price_position(pct):
@@ -128,6 +128,36 @@ def map_vwap_position(deviation):
     if deviation > 0.5: return "多头控制"
     if deviation < -0.5: return "空头控制"
     return "中性"
+
+# ======================== 辅助函数：根据周期和窗口根数返回时间描述 ========================
+def _get_time_desc(period_name, window):
+    """返回如 '过去半小时' 的时间描述"""
+    if period_name == "15m":
+        minutes = 15 * window
+        if minutes < 60:
+            return f"过去{minutes}分钟"
+        else:
+            hours = minutes / 60
+            return f"过去{int(hours)}小时" if hours == int(hours) else f"过去{hours:.1f}小时"
+    elif period_name == "1h":
+        hours = 1 * window
+        if hours < 24:
+            return f"过去{hours}小时"
+        else:
+            days = hours / 24
+            return f"过去{int(days)}天" if days == int(days) else f"过去{days:.1f}天"
+    elif period_name == "4h":
+        hours = 4 * window
+        if hours < 24:
+            return f"过去{hours}小时"
+        else:
+            days = hours / 24
+            return f"过去{int(days)}天" if days == int(days) else f"过去{days:.1f}天"
+    elif period_name == "1d":
+        days = 1 * window
+        return f"过去{days}天"
+    else:
+        return f"过去{window}根"
 
 # ======================== 工具函数（保留原有） ========================
 def now():
@@ -369,9 +399,9 @@ def calc_delta_trend(deltas):
     if len(deltas) < 2:
         return "平稳"
     slope = linear_regression_slope(deltas)
-    if slope > 5:
+    if slope > 2:
         return "上升"
-    elif slope < -5:
+    elif slope < -2:
         return "下降"
     else:
         return "平稳"
@@ -784,7 +814,7 @@ def calc_overall_price_features_sync(symbol):
         result['short'] = {'error': True}
     return result
 
-# ==================== 完整报告生成（与 analyzer.py 完全一致） ====================
+# ==================== 完整报告生成（自然语言优化版） ====================
 def generate_full_report(symbol, period_results, overall):
     lines = []
     lines.append(f"\n{'='*80}")
@@ -797,26 +827,26 @@ def generate_full_report(symbol, period_results, overall):
     ov = overall['long']
     if not ov.get('error'):
         suff = "" if ov['sufficient'] else f"（实际{ov['count']}个月，不足24个月）"
-        lines.append(f"📅 近2年（月度K线{suff}）:")
+        lines.append(f"📅 近2年（定义为长周期，使用月度K线计算{suff}）:")
         lines.append(f"   💰 当前价格: {ov['current']}")
         lines.append(f"   📈 过去 {ov['count']} 个月高点: {ov['high']}（{ov['high_time']}）")
         lines.append(f"   📉 过去 {ov['count']} 个月低点: {ov['low']}（{ov['low_time']}）")
-        lines.append(f"   📍 当前位置: {ov['pct']:.1f}%（{ov['grade']}）")
+        lines.append(f"   📍 当前价格位置（低到高的分位数）: {ov['pct']:.1f}%（{ov['grade']}）")
         if ov['pct'] >= 80:
-            lines.append(f"   🔴 解读: 价格处于长周期高位，警惕回调风险。")
+            lines.append(f"   🔴 解读: 价格处于长周期高位，可能继续新高，但更要警惕回调风险。")
         elif ov['pct'] <= 20:
-            lines.append(f"   🟢 解读: 价格处于长周期低位，可能存在估值修复机会。")
+            lines.append(f"   🟢 解读: 价格处于长周期低位，可能存在价格修复机会。")
         else:
-            lines.append(f"   🟡 解读: 价格处于长周期中间区域，方向不明，观望为主。")
+            lines.append(f"   🟡 解读: 价格处于长周期中间区域，观望为主。")
         if not ov['sufficient']:
-            lines.append(f"   ⚠️ 注意：该币种上市仅 {ov['count']} 个月，数据不足24个月。")
+            lines.append(f"   ⚠️ 注意：该币种上市共 {ov['count']} 个月。")
     else:
         lines.append("📅 近2年（月度K线）：无法获取数据")
 
     ov = overall['mid']
     if not ov.get('error'):
         suff = "" if ov['sufficient'] else f"（实际{ov['count']}天，不足90天）"
-        lines.append(f"\n📅 近3个月（日K线{suff}）:")
+        lines.append(f"\n📅 近3个月（定义为中周期，使用日K线计算{suff}）:")
         lines.append(f"   💰 当前价格: {ov['current']}")
         lines.append(f"   📈 过去 {ov['count']} 天高点: {ov['high']}（{ov['high_time']}）")
         lines.append(f"   📉 过去 {ov['count']} 天低点: {ov['low']}（{ov['low_time']}）")
@@ -835,7 +865,7 @@ def generate_full_report(symbol, period_results, overall):
     ov = overall['short']
     if not ov.get('error'):
         suff = "" if ov['sufficient'] else f"（实际{ov['count']}天，不足30天）"
-        lines.append(f"\n📅 近1个月（日K线{suff}）:")
+        lines.append(f"\n📅 近1个月（定义为短周期，使用日K线计算{suff}）:")
         lines.append(f"   💰 当前价格: {ov['current']}")
         lines.append(f"   📈 过去 {ov['count']} 天高点: {ov['high']}（{ov['high_time']}）")
         lines.append(f"   📉 过去 {ov['count']} 天低点: {ov['low']}（{ov['low_time']}）")
@@ -869,7 +899,16 @@ def generate_full_report(symbol, period_results, overall):
         strength = f"{t['strength']['score']:.0f}%({t['strength']['grade'][:2]})" if t['strength']['score'] else '--'
         price_pos = f"{t['price_position']['pct']:.0f}%({t['price_position']['grade'][:2]})" if t['price_position']['pct'] else '--'
         vol_exp = data['volatility']['expansion_grade'][:4] if data['volatility']['expansion_grade'] else '--'
-        struct = data['structure']['swing_structure'][:8] if data['structure']['swing_structure'] else '--'
+        struct_raw = data['structure']['swing_structure']
+        # 将结构描述转为自然语言
+        if "HH+HL" in struct_raw:
+            struct = "上升结构"
+        elif "LH+LL" in struct_raw:
+            struct = "下降结构"
+        elif "杂乱" in struct_raw:
+            struct = "震荡"
+        else:
+            struct = struct_raw[:8]
         comment = ""
         if period_name == "15m":
             if t['short']['dir'] == "上涨" and t['price_position']['pct']>70:
@@ -911,11 +950,15 @@ def generate_full_report(symbol, period_results, overall):
         lines.append(f"【🔍 {period_name}周期详细分析】")
         lines.append('='*80)
         t = data['trend']
+        # 生成时间描述
+        short_time = _get_time_desc(period_name, cfg.get('short', 0))
+        mid_time = _get_time_desc(period_name, cfg.get('mid', 0))
+        long_time = _get_time_desc(period_name, cfg.get('long', 0))
         lines.append(f"\n📌 趋势方向:")
-        lines.append(f"   短期({cfg.get('short', '?')}根): {t['short']['dir']} (斜率 {t['short']['slope']:.2f})")
-        lines.append(f"   中期({cfg.get('mid', '?')}根): {t['mid']['dir']} (斜率 {t['mid']['slope']:.2f})")
-        lines.append(f"   长期({cfg.get('long', '?')}根): {t['long']['dir']} (斜率 {t['long']['slope']:.2f})")
-        lines.append(f"   → 综合: {t['short']['dir']}/{t['mid']['dir']}/{t['long']['dir']}")
+        lines.append(f"   {short_time}: {t['short']['dir']} (斜率 {t['short']['slope']:.2f})")
+        lines.append(f"   {mid_time}: {t['mid']['dir']} (斜率 {t['mid']['slope']:.2f})")
+        lines.append(f"   {long_time}: {t['long']['dir']} (斜率 {t['long']['slope']:.2f})")
+        lines.append(f"   → 综合: {short_time}/{mid_time}/{long_time} 均{'、'.join([t['short']['dir'], t['mid']['dir'], t['long']['dir']])}")
         lines.append(f"\n💪 趋势强度: {t['strength']['score']:.1f}% ({t['strength']['grade']})")
         if t['strength']['score'] > 70:
             lines.append(f"   🔥 解读: 趋势强劲，顺势交易胜率高。")
@@ -966,9 +1009,25 @@ def generate_full_report(symbol, period_results, overall):
         lines.append(f"   成交量趋势: {vol['trend']}")
         lines.append(f"   极值: {'是' if vol['extreme'] else '否'}  聚类: {'有' if vol['cluster'] else '无'}")
         s = data['structure']
+        # 自然语言化结构描述
+        swing_desc = s['swing_structure']
+        if "HH+HL" in swing_desc:
+            swing_desc = "高点抬高且低点抬高（上升结构）"
+        elif "LH+LL" in swing_desc:
+            swing_desc = "高点降低且低点降低（下降结构）"
+        elif "杂乱" in swing_desc:
+            swing_desc = "无明显结构（震荡）"
         lines.append(f"\n🏗️ 结构特征:")
-        lines.append(f"   高低点结构: {s['swing_structure']}")
-        lines.append(f"   突破: {s['breakout_direction']} ({s['breakout_effectiveness']})")
+        lines.append(f"   高低点结构: {swing_desc}")
+        # 突破描述自然语言化
+        break_dir = s['breakout_direction']
+        if break_dir == "向上突破":
+            break_desc = f"向上突破（{s['breakout_effectiveness']}）"
+        elif break_dir == "向下突破":
+            break_desc = f"向下突破（{s['breakout_effectiveness']}）"
+        else:
+            break_desc = "无"
+        lines.append(f"   突破: {break_desc}")
         lines.append(f"   短期阻力/支撑: {s['short_resistance']:.2f} / {s['short_support']:.2f}")
         if data['micro']['body_ratio'] is not None:
             m = data['micro']
