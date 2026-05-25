@@ -597,10 +597,10 @@ UI_TEMPLATE = """
                     const s = c.schedule || {};
                     document.getElementById('cfg_schedule_daily_min').value = s.daily_min || 10;
                     document.getElementById('cfg_schedule_daily_max').value = s.daily_max || 20;
-                    document.getElementById('cfg_schedule_interval_min').value = s.interval_min || 8;
-                    document.getElementById('cfg_schedule_interval_max').value = s.interval_max || 25;
+                    document.getElementById('cfg_schedule_interval_min').value = s.interval_min || 60;
+                    document.getElementById('cfg_schedule_interval_max').value = s.interval_max || 110;
                     document.getElementById('cfg_schedule_active_start').value = s.active_start || '08:00';
-                    document.getElementById('cfg_schedule_active_end').value = s.active_end || '22:00';
+                    document.getElementById('cfg_schedule_active_end').value = s.active_end || '23:59';
                     document.getElementById('config_log').textContent = '已加载';
                 });
         }
