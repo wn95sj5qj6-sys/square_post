@@ -23,11 +23,28 @@ DATA_DIR = "data"
 DB_FILE = f"{DATA_DIR}/records.json"
 CONFIG_FILE = f"{DATA_DIR}/config.json"
 PROMPT_FILE = f"{DATA_DIR}/prompts.json"
+GLOBAL_CONFIG_FILE = f"{DATA_DIR}/global_config.json"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # 多账号运行状态存储（内存中，key: 账号名，value: 是否运行）
 account_running_status = {}
 status_lock = threading.Lock()
+
+# ======================== 全局配置管理 ========================
+def load_global_config():
+    return load_json(GLOBAL_CONFIG_FILE, {"manual_verbose_mode": False})
+
+def save_global_config(config):
+    save_json(GLOBAL_CONFIG_FILE, config)
+
+def get_manual_verbose_mode():
+    cfg = load_global_config()
+    return cfg.get("manual_verbose_mode", False)
+
+def set_manual_verbose_mode(enabled):
+    cfg = load_global_config()
+    cfg["manual_verbose_mode"] = enabled
+    save_global_config(cfg)
 
 # ======================== 工具函数 ========================
 def load_json(file_path, default=None):
@@ -211,7 +228,7 @@ def auto_publisher_worker(account_name):
 
         try:
             from topic_main import run_topic
-            topic = run_topic()
+            topic = run_topic()  # 自动模式使用精简版（verbose=False）
             if not topic:
                 time.sleep(10)
                 continue
@@ -330,6 +347,7 @@ UI_TEMPLATE = """
         @media(max-width:480px){.card{padding:16px;}.account-actions-wrapper{flex-direction:column;}.grid-row{grid-template-columns:1fr;}}
         .button-group { display: flex; gap: 12px; margin-bottom: 16px; }
         .button-group .btn { flex: 1; }
+        .verbose-checkbox { display: inline-flex; align-items: center; gap: 6px; margin-left: 16px; font-size: 13px; color: var(--gray); }
     </style>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
 </head>
@@ -399,9 +417,13 @@ UI_TEMPLATE = """
                     <label class="form-label">交易对</label>
                     <input type="text" id="manual_symbol" class="form-control" placeholder="如 BTCUSDT">
                 </div>
-                <div style="display:flex;gap:8px;margin-bottom:16px;">
+                <div style="display:flex;gap:8px;margin-bottom:16px; flex-wrap: wrap; align-items: center;">
                     <button class="btn btn-secondary" onclick="autoSelectSymbol()">自动选交易对</button>
                     <button class="btn btn-secondary" onclick="generateFullTopic()">生成完整分析</button>
+                    <label class="verbose-checkbox">
+                        <input type="checkbox" id="verbose_mode_checkbox" onchange="toggleVerboseMode()"> 
+                        <span>详细模式（输出完整分析，消耗更多token）</span>
+                    </label>
                 </div>
                 <div class="form-group">
                     <label class="form-label">话题分析（可编辑）</label>
@@ -766,9 +788,30 @@ UI_TEMPLATE = """
                 });
         }
         
+        function toggleVerboseMode() {
+            const enabled = document.getElementById('verbose_mode_checkbox').checked;
+            fetch('/api/config/verbose', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({verbose: enabled})
+            }).then(r => r.json()).then(d => {
+                if (!d.success) console.error('保存失败');
+            }).catch(e => console.error(e));
+        }
+        
+        function loadVerboseMode() {
+            fetch('/api/config/verbose')
+                .then(r => r.json())
+                .then(d => {
+                    document.getElementById('verbose_mode_checkbox').checked = d.verbose;
+                })
+                .catch(e => console.error(e));
+        }
+        
         window.onload = function() {
             refreshAutoPage();
             loadRecords();
+            loadVerboseMode();
         };
     </script>
 </body>
@@ -848,6 +891,16 @@ def config_save():
     )
     return jsonify({'success': True})
 
+@app.route('/api/config/verbose', methods=['GET', 'POST'])
+def config_verbose():
+    if request.method == 'GET':
+        return jsonify({"verbose": get_manual_verbose_mode()})
+    else:
+        data = request.json
+        enabled = data.get("verbose", False)
+        set_manual_verbose_mode(enabled)
+        return jsonify({"success": True, "verbose": enabled})
+
 @app.route('/api/manual/auto_symbol')
 def manual_auto_symbol():
     try:
@@ -861,8 +914,9 @@ def manual_auto_symbol():
 @app.route('/api/manual/full_topic')
 def manual_full_topic():
     symbol = request.args.get('symbol', '').strip()
+    verbose = get_manual_verbose_mode()
     from topic_main import run_topic
-    topic = run_topic(target_symbol=symbol)
+    topic = run_topic(target_symbol=symbol, verbose=verbose)
     return jsonify({'success': True, 'topic': topic.get('text', '')})
 
 @app.route('/api/manual/generate_ai', methods=['POST'])
