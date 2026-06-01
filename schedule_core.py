@@ -49,7 +49,12 @@ def get_account_schedule_config(acc_cfg):
         "active_end": s.get("active_end", DEFAULT_ACTIVE_END)
     }
 
-def init_daily_plan(account_name, daily_min, daily_max):
+def init_daily_plan(account_name, daily_min, daily_max, auto_published=0, manual_published=0):
+    """
+    初始化或获取当天的发文计划。
+    如果当天计划已存在，则返回现有计划（不覆盖已有的计数）。
+    如果不存在，则创建新计划，使用传入的 auto_published/manual_published（用于启动恢复）。
+    """
     today = get_today_str()
     with schedule_lock:
         if account_name in account_schedule:
@@ -60,8 +65,9 @@ def init_daily_plan(account_name, daily_min, daily_max):
         daily_target = random.randint(daily_min, daily_max)
         new_plan = {
             "date": today,
-            "daily_target": daily_target,
-            "published": 0
+            "auto_target": daily_target,
+            "auto_published": auto_published,
+            "manual_published": manual_published
         }
         account_schedule[account_name] = new_plan
         return new_plan
@@ -69,20 +75,54 @@ def init_daily_plan(account_name, daily_min, daily_max):
 def get_random_interval(interval_min, interval_max):
     return random.randint(interval_min, interval_max)
 
-def inc_published(account_name):
+def inc_auto_published(account_name):
     today = get_today_str()
     with schedule_lock:
         if account_name not in account_schedule:
             return
         plan = account_schedule[account_name]
         if plan.get("date") == today:
-            plan["published"] += 1
+            plan["auto_published"] += 1
+
+def inc_manual_published(account_name):
+    today = get_today_str()
+    with schedule_lock:
+        if account_name not in account_schedule:
+            return
+        plan = account_schedule[account_name]
+        if plan.get("date") == today:
+            plan["manual_published"] += 1
 
 def can_publish(account_name: str, acc_cfg: dict) -> bool:
     cfg = get_account_schedule_config(acc_cfg)
     if not is_in_active_time(cfg["active_start"], cfg["active_end"]):
         return False
     plan = init_daily_plan(account_name, cfg["daily_min"], cfg["daily_max"])
-    if plan["published"] >= plan["daily_target"]:
+    if plan["auto_published"] >= plan["auto_target"]:
         return False
     return True
+
+def get_daily_stats(account_name: str, acc_cfg: dict):
+    """
+    返回当天的统计数据：(auto_target, auto_published, manual_published)
+    如果当天计划不存在，则先创建。
+    """
+    cfg = get_account_schedule_config(acc_cfg)
+    plan = init_daily_plan(account_name, cfg["daily_min"], cfg["daily_max"])
+    return plan["auto_target"], plan["auto_published"], plan["manual_published"]
+
+def set_daily_stats(account_name: str, acc_cfg: dict, auto_published=None, manual_published=None):
+    """
+    用于从记录恢复时手动设置计数。不会覆盖自动目标，仅更新已发数量。
+    """
+    today = get_today_str()
+    cfg = get_account_schedule_config(acc_cfg)
+    with schedule_lock:
+        if account_name not in account_schedule or account_schedule[account_name].get("date") != today:
+            # 先初始化
+            init_daily_plan(account_name, cfg["daily_min"], cfg["daily_max"], 0, 0)
+        plan = account_schedule[account_name]
+        if auto_published is not None:
+            plan["auto_published"] = auto_published
+        if manual_published is not None:
+            plan["manual_published"] = manual_published
