@@ -479,21 +479,21 @@ UI_TEMPLATE = """
                 <div class="grid-row">
                     <div>
                         <label class="form-label">最小间隔(分钟)</label>
-                        <input type="number" id="cfg_schedule_interval_min" class="form-control" min="2" value="8">
+                        <input type="number" id="cfg_schedule_interval_min" class="form-control" min="2" value="60">
                     </div>
                     <div>
                         <label class="form-label">最大间隔(分钟)</label>
-                        <input type="number" id="cfg_schedule_interval_max" class="form-control" min="5" value="25">
+                        <input type="number" id="cfg_schedule_interval_max" class="form-control" min="5" value="90">
                     </div>
                 </div>
                 <div class="grid-row">
                     <div>
                         <label class="form-label">活跃开始时间</label>
-                        <input type="time" class="form-control" id="cfg_schedule_active_start" value="08:00">
+                        <input type="time" class="form-control" id="cfg_schedule_active_start" value="07:00">
                     </div>
                     <div>
                         <label class="form-label">活跃结束时间</label>
-                        <input type="time" class="form-control" id="cfg_schedule_active_end" value="22:00">
+                        <input type="time" class="form-control" id="cfg_schedule_active_end" value="23:59">
                     </div>
                 </div>
 
