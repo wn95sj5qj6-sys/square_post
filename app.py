@@ -7,7 +7,7 @@ import time
 import urllib.parse
 
 # ===================== 【关键：导入调度模块】 =====================
-from schedule_core import can_publish, get_random_interval, inc_published
+from schedule_core import can_publish, get_random_interval, inc_auto_published, inc_manual_published, get_daily_stats, set_daily_stats
 # ==================================================================
 
 app = Flask(__name__)
@@ -16,7 +16,7 @@ app = Flask(__name__)
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEFAULT_AUTO_INTERVAL = int(os.getenv("AUTO_INTERVAL_MINUTES", "60"))
-DEFAULT_DAILY_LIMIT = int(os.getenv("DAILY_MAX_LIMIT", "8"))
+DEFAULT_DAILY_LIMIT = int(os.getenv("DAILY_MAX_LIMIT", "8"))  # 保留但不再用于手动限制
 
 # 数据存储路径
 DATA_DIR = "data"
@@ -42,6 +42,33 @@ def load_json(file_path, default=None):
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+# ======================== 启动时恢复计数（从 records.json） ========================
+def recover_counts_from_records():
+    """服务启动时，从今天的成功发文记录中恢复 auto_published 和 manual_published"""
+    today = str(datetime.date.today())
+    db = load_json(DB_FILE, [])
+    # 按账号统计
+    auto_counts = {}
+    manual_counts = {}
+    for record in db:
+        if record.get("date") == today and record.get("status") == "success":
+            acc = record.get("account")
+            mode = record.get("mode")
+            if not acc:
+                continue
+            if mode == "auto":
+                auto_counts[acc] = auto_counts.get(acc, 0) + 1
+            elif mode == "manual":
+                manual_counts[acc] = manual_counts.get(acc, 0) + 1
+    # 应用到 schedule_core
+    accounts = get_all_accounts()
+    for acc in accounts:
+        acc_name = acc["name"]
+        auto_pub = auto_counts.get(acc_name, 0)
+        manual_pub = manual_counts.get(acc_name, 0)
+        set_daily_stats(acc_name, acc, auto_published=auto_pub, manual_published=manual_pub)
+    print(f"[启动恢复] 已恢复今日发文计数: auto={auto_counts}, manual={manual_counts}")
 
 # ======================== 账号管理 ========================
 def get_accounts_from_env():
@@ -77,7 +104,7 @@ def get_all_accounts():
             "key": acc["key"],
             "prompt": acc_config.get("prompt", ""),
             "model_type": acc_config.get("model_type", "zhipu"),
-            "daily_limit": acc_config.get("daily_limit", DEFAULT_DAILY_LIMIT),
+            "daily_limit": acc_config.get("daily_limit", DEFAULT_DAILY_LIMIT),  # 保留但前端不再用作手动限制
             "auto_interval": acc_config.get("auto_interval", DEFAULT_AUTO_INTERVAL),
             "schedule": acc_config.get("schedule", {}),
             "running": running
@@ -131,34 +158,22 @@ def save_post_record(mode, account_name, symbol, content, post_id, status="succe
     save_json(DB_FILE, db)
 
 def get_today_stats(account_name=None):
-    today = str(datetime.date.today())
-    db = load_json(DB_FILE, [])
-    
-    stats = {}
+    """从 schedule_core 获取今日统计，不再依赖 records.json"""
     accounts = get_all_accounts()
+    stats = {}
     for acc in accounts:
-        stats[acc["name"]] = {
-            "count": 0,
-            "auto_count": 0,
-            "manual_count": 0,
-            "limit": acc["daily_limit"],
-            "remaining": acc["daily_limit"],
+        acc_name = acc["name"]
+        auto_target, auto_pub, manual_pub = get_daily_stats(acc_name, acc)
+        stats[acc_name] = {
+            "auto_target": auto_target,
+            "auto_count": auto_pub,
+            "manual_count": manual_pub,
             "running": acc["running"]
         }
-    
-    for record in db:
-        if record.get("date") == today and record.get("status") == "success":
-            acc_name = record.get("account", "")
-            if acc_name in stats:
-                stats[acc_name]["count"] += 1
-                if record.get("mode") == "auto":
-                    stats[acc_name]["auto_count"] += 1
-                else:
-                    stats[acc_name]["manual_count"] += 1
-                stats[acc_name]["remaining"] = stats[acc_name]["limit"] - stats[acc_name]["count"]
-    
     if account_name:
-        return stats.get(account_name, {"count": 0, "auto_count":0, "manual_count":0, "limit": DEFAULT_DAILY_LIMIT, "remaining": DEFAULT_DAILY_LIMIT, "running": False})
+        return stats.get(account_name, {
+            "auto_target": 0, "auto_count": 0, "manual_count": 0, "running": False
+        })
     return stats
 
 def delete_records(account=None, date=None, all_records=False):
@@ -219,7 +234,7 @@ def auto_publisher_worker(account_name):
                 cfg[f"{account_name}_last_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 cfg[f"{account_name}_last_auto_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 save_json(CONFIG_FILE, cfg)
-                inc_published(account_name)
+                inc_auto_published(account_name)
 
             schedule_cfg = current_acc.get("schedule", {})
             sleep_min = get_random_interval(
@@ -246,7 +261,7 @@ def stop_account_auto_publish(account_name):
         account_running_status[account_name] = False
     return True
 
-# ======================== 网页模板【最终纯净版】 ========================
+# ======================== 网页模板 ========================
 UI_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -313,6 +328,8 @@ UI_TEMPLATE = """
         .delete-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--border);}
         .grid-row{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:12px;}
         @media(max-width:480px){.card{padding:16px;}.account-actions-wrapper{flex-direction:column;}.grid-row{grid-template-columns:1fr;}}
+        .button-group { display: flex; gap: 12px; margin-bottom: 16px; }
+        .button-group .btn { flex: 1; }
     </style>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
 </head>
@@ -352,10 +369,10 @@ UI_TEMPLATE = """
                 <div class="stats-grid" id="today_stats">
                     {% for acc_name, stat in today_stats.items() %}
                     <div class="stat-card" id="stat_{{acc_name}}" onclick="showAccountConfig('{{acc_name}}')">
-                        <div class="stat-value">{{stat.count}}</div>
+                        <div class="stat-value">{{ stat.auto_count + stat.manual_count }}</div>
                         <div class="stat-label">{{acc_name}}</div>
-                        <div class="stat-label">自动: {{stat.auto_count}} | 手动: {{stat.manual_count}}</div>
-                        <div class="stat-label">剩余: {{stat.remaining}}/{{stat.limit}}</div>
+                        <div class="stat-label">自动: {{stat.auto_count}}/{{stat.auto_target}}</div>
+                        <div class="stat-label">手动: {{stat.manual_count}}</div>
                         {% if stat.running %}
                         <div class="stat-label" style="color:var(--success);">运行中</div>
                         {% else %}
@@ -374,7 +391,7 @@ UI_TEMPLATE = """
                     <label class="form-label">选择发文账号</label>
                     <select id="manual_account" class="form-control">
                         {% for acc in accounts %}
-                        <option value="{{acc.key}}" data-name="{{acc.name}}">{{acc.name}} (今日剩余:{{today_stats[acc.name].remaining}}/{{today_stats[acc.name].limit}})</option>
+                        <option value="{{acc.key}}" data-name="{{acc.name}}">{{acc.name}} (手动已发:{{today_stats[acc.name].manual_count}})</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -388,17 +405,20 @@ UI_TEMPLATE = """
                 </div>
                 <div class="form-group">
                     <label class="form-label">话题分析（可编辑）</label>
-                    <textarea id="manual_topic" class="form-control"></textarea>
+                    <textarea id="manual_topic" class="form-control" style="resize: vertical;"></textarea>
                 </div>
-                <button class="btn btn-secondary" onclick="generateAIContent()" style="width:100%;margin-bottom:16px;">生成发文内容</button>
+                <div class="button-group">
+                    <button class="btn btn-secondary" onclick="copyTopicToClipboard()"><i class="fa fa-copy"></i> 复制话题分析</button>
+                    <button class="btn btn-secondary" onclick="generateAIContent()">生成发文内容</button>
+                </div>
                 <div class="form-group">
                     <label class="form-label">最终内容（可编辑）</label>
-                    <textarea id="manual_content" class="form-control"></textarea>
+                    <textarea id="manual_content" class="form-control" style="resize: vertical;"></textarea>
                 </div>
                 <button class="btn btn-primary" onclick="submitPost()" style="width:100%">确认发文</button>
                 <div class="log-box" id="manual_log">等待操作...</div>
             </div>
-            <!-- 账号配置【已清理：删除无用项 + 样式统一】 -->
+            <!-- 账号配置 -->
             <div id="config" class="tab-content">
                 <div class="form-group">
                     <label class="form-label">选择要配置的账号</label>
@@ -420,7 +440,7 @@ UI_TEMPLATE = """
                     </select>
                 </div>
 
-                <!-- 发文计划高级设置【样式统一 + 干净整洁】 -->
+                <!-- 发文计划高级设置 -->
                 <div class="form-group" style="margin-top:20px;">
                     <label class="form-label">📅 发文计划设置</label>
                 </div>
@@ -518,7 +538,8 @@ UI_TEMPLATE = """
                         .then(r => r.json())
                         .then(s => {
                             const st = d.running ? `<span style="color:var(--success);">运行中</span>` : `<span style="color:var(--gray);">已停止</span>`;
-                            document.getElementById('auto_account_status').innerHTML = `${st} | 已发:${s.count}`;
+                            const total = (s.auto_count||0) + (s.manual_count||0);
+                            document.getElementById('auto_account_status').innerHTML = `${st} | 今日总发文:${total} (自动:${s.auto_count}/${s.auto_target} 手动:${s.manual_count})`;
                             document.getElementById('auto_start_btn').disabled = d.running;
                             document.getElementById('auto_stop_btn').disabled = !d.running;
                         });
@@ -565,7 +586,6 @@ UI_TEMPLATE = """
                 });
         }
         
-        // ===================== 【修复：统计显示正确条数】 =====================
         function refreshAutoPage() {
             fetch('/api/auto/refresh')
                 .then(r => r.json())
@@ -573,17 +593,29 @@ UI_TEMPLATE = """
                     let h = '';
                     for(const acc of d.accounts) {
                         const s = d.today_stats[acc.name];
-                        const maxLimit = acc.schedule?.daily_max || s.limit;
-                        const remain = Math.max(0, maxLimit - s.count);
+                        if(!s) continue;
+                        const total = (s.auto_count||0) + (s.manual_count||0);
                         h += `<div class="stat-card" onclick="showAccountConfig('${acc.name}')">
-                            <div class="stat-value">${s.count}</div>
+                            <div class="stat-value">${total}</div>
                             <div class="stat-label">${acc.name}</div>
-                            <div class="stat-label">自动:${s.auto_count} 手动:${s.manual_count}</div>
-                            <div class="stat-label">剩余:${remain}/${maxLimit}</div>
+                            <div class="stat-label">自动: ${s.auto_count}/${s.auto_target}</div>
+                            <div class="stat-label">手动: ${s.manual_count}</div>
                             ${s.running?'<div class="stat-label" style="color:var(--success);">运行中</div>':'<div class="stat-label" style="color:var(--gray);">已停止</div>'}
                         </div>`;
                     }
                     document.getElementById('today_stats').innerHTML = h;
+                    // 同时更新手动模式的下拉框
+                    const manualSelect = document.getElementById('manual_account');
+                    if(manualSelect) {
+                        for(let i=0; i<manualSelect.options.length; i++) {
+                            const opt = manualSelect.options[i];
+                            const name = opt.getAttribute('data-name');
+                            if(name && d.today_stats[name]) {
+                                const st = d.today_stats[name];
+                                opt.text = `${name} (手动已发:${st.manual_count})`;
+                            }
+                        }
+                    }
                 });
         }
         
@@ -597,10 +629,10 @@ UI_TEMPLATE = """
                     const s = c.schedule || {};
                     document.getElementById('cfg_schedule_daily_min').value = s.daily_min || 10;
                     document.getElementById('cfg_schedule_daily_max').value = s.daily_max || 20;
-                    document.getElementById('cfg_schedule_interval_min').value = s.interval_min || 60;
-                    document.getElementById('cfg_schedule_interval_max').value = s.interval_max || 110;
+                    document.getElementById('cfg_schedule_interval_min').value = s.interval_min || 8;
+                    document.getElementById('cfg_schedule_interval_max').value = s.interval_max || 25;
                     document.getElementById('cfg_schedule_active_start').value = s.active_start || '08:00';
-                    document.getElementById('cfg_schedule_active_end').value = s.active_end || '23:59';
+                    document.getElementById('cfg_schedule_active_end').value = s.active_end || '22:00';
                     document.getElementById('config_log').textContent = '已加载';
                 });
         }
@@ -640,11 +672,28 @@ UI_TEMPLATE = """
         
         function generateFullTopic() {
             const s = document.getElementById('manual_symbol').value;
+            if(!s) {
+                alert('请先输入或自动选择交易对');
+                return;
+            }
             fetch(`/api/manual/full_topic?symbol=${s}`)
                 .then(r => r.json())
                 .then(d => {
                     document.getElementById('manual_topic').value = d.topic;
                 });
+        }
+        
+        function copyTopicToClipboard() {
+            const topic = document.getElementById('manual_topic').value;
+            if(!topic) {
+                alert('话题分析为空，请先生成分析');
+                return;
+            }
+            navigator.clipboard.writeText(topic).then(() => {
+                alert('话题分析已复制到剪贴板');
+            }).catch(() => {
+                alert('复制失败，请手动复制');
+            });
         }
         
         function generateAIContent() {
@@ -663,12 +712,16 @@ UI_TEMPLATE = """
             const k = document.getElementById('manual_account').value;
             const c = document.getElementById('manual_content').value;
             const s = document.getElementById('manual_symbol').value;
+            if(!c.trim()) {
+                alert('发文内容不能为空');
+                return;
+            }
             fetch('/api/manual/post', {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
                 body: JSON.stringify({account_key:k,content:c,symbol:s})
             }).then(r => r.json()).then(d => {
-                document.getElementById('manual_log').textContent = d.success ? '✅发文成功' : '❌发文失败';
+                document.getElementById('manual_log').textContent = d.success ? '✅发文成功' : '❌发文失败: '+d.msg;
                 refreshAutoPage();
             });
         }
@@ -837,6 +890,7 @@ def manual_post():
     pid = str(pid) if pid else '未知'
     if ok:
         save_post_record('manual', acc['name'], s, c, pid)
+        inc_manual_published(acc['name'])  # 增加手动计数
         cfg = load_json(CONFIG_FILE)
         cfg[f"{acc['name']}_last_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cfg[f"{acc['name']}_last_manual_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -884,4 +938,6 @@ def records_delete():
     return jsonify({'success': True, 'deleted_count': cnt})
 
 if __name__ == '__main__':
+    # 启动时恢复计数
+    recover_counts_from_records()
     app.run(host='0.0.0.0', port=5000, debug=False)
