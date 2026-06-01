@@ -10,12 +10,12 @@ def call_zhipu(prompt,api_key,retry=3):
         try:
             r=requests.post("https://open.bigmodel.cn/api/paas/v4/chat/completions",
                 headers={"Authorization":f"Bearer {clean_key(api_key)}"},
-                json={"model":"glm-4-flash","messages":[{"role":"user","content":prompt}]},timeout=15)
+                json={"model":"glm-4-flash","messages":[{"role":"user","content":prompt}]},timeout=60)
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
             print("智谱失败",e)
-            time.sleep(1)
+            time.sleep(2)
     return ""
 
 def call_deepseek(prompt,api_key,retry=3):
@@ -23,12 +23,12 @@ def call_deepseek(prompt,api_key,retry=3):
         try:
             r=requests.post("https://api.deepseek.com/chat/completions",
                 headers={"Authorization":f"Bearer {clean_key(api_key)}","Content-Type":"application/json"},
-                json={"model":"deepseek-v4-flash","messages":[{"role":"user","content":prompt}],"stream":False},timeout=15)
+                json={"model":"deepseek-v4-flash","messages":[{"role":"user","content":prompt}],"stream":False},timeout=30)
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
             print("DeepSeek失败",e)
-            time.sleep(1)
+            time.sleep(2)
     return ""
 
 def generate_content(topic,api_key,model_type="zhipu",custom_prompt=None):
