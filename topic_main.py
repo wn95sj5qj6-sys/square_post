@@ -3,7 +3,7 @@
 币安广场发文助手 - 话题生成模块（增强版）
 整合市场行为特征分析器，生成深度市场分析报告。
 对外接口保持不变：run_topic(target_symbol=None) 和 get_single_symbol_topic(symbol)
-输出颗粒度与 analyzer.py 完全一致（包含所有解读、等级、短期建议等）
+输出包含K线技术分析 + 资金费率/OI/大户多空比等资金博弈分析。
 """
 import requests
 import math
@@ -54,6 +54,19 @@ DELTA_TREND_WINDOW = 5                 # Delta趋势窗口
 DIVERGENCE_LOOKBACK = 11               # 背离检测窗口
 ENERGY_EXHAUSTION_PRICE_WINDOW = 7    # 价格创新高窗口
 ENERGY_EXHAUSTION_DELTA_DOWN = 3       # Delta连续下降窗口
+
+# ======================== 资金费率/OI/多空比参数 ========================
+FUNDING_HISTORY_DAYS = 30
+FUNDING_EXTREME_PERCENTILE = 90
+FUNDING_HIGH_WARNING = 0.0005
+FUNDING_LOW_WARNING = -0.0005
+OI_PERIOD = "15m"
+OI_HISTORY_LIMIT = 200
+OI_HIGH_WATERMARK_PERCENTILE = 90
+LS_RATIO_PERIOD = "1h"
+LS_RATIO_LIMIT = 168
+LS_RATIO_EXTREME_LONG = 1.5
+LS_RATIO_EXTREME_SHORT = 0.6
 
 # ======================== 等级映射函数 ========================
 def map_trend_strength(score):
@@ -186,6 +199,9 @@ _klines_cache = {}
 _oi_cache = {}
 _funding_rate_cache = {}
 _funding_hist_cache = {}
+_funding_info_cache = {}
+_ls_account_cache = {}
+_ls_position_cache = {}
 _cache_ttl = 300  # 5分钟
 
 def _get_cache(cache_dict, key):
@@ -225,7 +241,6 @@ def fetch_klines_sync(symbol, interval, limit=200):
             "volume": float(k[5]),
         }
         if interval in ["15m", "1h"]:
-            # 主动买入量(索引9) 和 成交笔数(索引8)
             item["taker_buy_volume"] = float(k[9]) if len(k) > 9 else 0.0
             item["trades_count"] = int(k[8]) if len(k) > 8 else 0
         klines.append(item)
@@ -262,13 +277,14 @@ def fetch_current_funding_rate_sync(symbol):
         resp.raise_for_status()
         data = resp.json()
         rate = float(data["lastFundingRate"])
+        next_time = data.get("nextFundingTime", 0)
     except Exception as e:
         print(f"请求资金费率失败 {symbol}: {e}")
         return None
-    _set_cache(_funding_rate_cache, cache_key, rate)
-    return rate
+    _set_cache(_funding_rate_cache, cache_key, (rate, next_time))
+    return (rate, next_time)
 
-def fetch_funding_history_sync(symbol, limit=1000):
+def fetch_funding_history_sync(symbol, limit=500):
     cache_key = f"funding_hist_{symbol}_{limit}"
     cached = _get_cache(_funding_hist_cache, cache_key)
     if cached:
@@ -285,6 +301,66 @@ def fetch_funding_history_sync(symbol, limit=1000):
     history = [{"timestamp": item["fundingTime"], "funding_rate": float(item["fundingRate"])} for item in data]
     _set_cache(_funding_hist_cache, cache_key, history)
     return history
+
+def fetch_funding_info_sync(symbol):
+    """获取结算周期（小时），默认8"""
+    cache_key = f"funding_info_{symbol}"
+    cached = _get_cache(_funding_info_cache, cache_key)
+    if cached:
+        return cached
+    url = "https://fapi.binance.com/fapi/v1/fundingInfo"
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"请求资金费率信息失败 {symbol}: {e}")
+        return 8
+    interval = 8
+    for item in data:
+        if item.get("symbol") == symbol:
+            interval = int(item.get("fundingIntervalHours", 8))
+            break
+    _set_cache(_funding_info_cache, cache_key, interval)
+    return interval
+
+def fetch_ls_ratio_account_sync(symbol, period="1h", limit=168):
+    """大户账户数多空比"""
+    cache_key = f"ls_account_{symbol}_{period}_{limit}"
+    cached = _get_cache(_ls_account_cache, cache_key)
+    if cached:
+        return cached
+    url = "https://fapi.binance.com/futures/data/topLongShortAccountRatio"
+    params = {"symbol": symbol, "period": period, "limit": limit}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"请求大户账户多空比失败 {symbol}: {e}")
+        return None
+    ratios = [{"timestamp": item["timestamp"], "ratio": float(item["longShortRatio"])} for item in data]
+    _set_cache(_ls_account_cache, cache_key, ratios)
+    return ratios
+
+def fetch_ls_ratio_position_sync(symbol, period="1h", limit=168):
+    """大户持仓量多空比"""
+    cache_key = f"ls_position_{symbol}_{period}_{limit}"
+    cached = _get_cache(_ls_position_cache, cache_key)
+    if cached:
+        return cached
+    url = "https://fapi.binance.com/futures/data/topLongShortPositionRatio"
+    params = {"symbol": symbol, "period": period, "limit": limit}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print(f"请求大户持仓多空比失败 {symbol}: {e}")
+        return None
+    ratios = [{"timestamp": item["timestamp"], "ratio": float(item["longShortRatio"])} for item in data]
+    _set_cache(_ls_position_cache, cache_key, ratios)
+    return ratios
 
 # ======================== 特征计算函数（与 analyzer.py 完全一致） ========================
 def linear_regression_slope(y):
@@ -574,7 +650,7 @@ def calc_energy_exhaustion(prices, deltas, relative_vols):
         return True
     return False
 
-# ==================== 单周期分析函数 ====================
+# ==================== 单周期分析函数（不含短期建议） ====================
 def analyze_period(klines, period_cfg):
     if not klines or len(klines) < period_cfg["min_klines"]:
         return None
@@ -814,15 +890,269 @@ def calc_overall_price_features_sync(symbol):
         result['short'] = {'error': True}
     return result
 
-# ==================== 完整报告生成（自然语言优化版） ====================
-def generate_full_report(symbol, period_results, overall):
+# ==================== 资金费率深度分析 ====================
+def analyze_funding(symbol):
+    result = {}
+    # 实时费率与下次结算时间
+    fr = fetch_current_funding_rate_sync(symbol)
+    if fr is None:
+        return None
+    rate, next_time = fr
+    result['current_rate'] = rate
+    result['next_funding_ts'] = next_time
+    # 结算周期
+    interval_hours = fetch_funding_info_sync(symbol)
+    result['interval_hours'] = interval_hours
+    # 历史百分位
+    hist = fetch_funding_history_sync(symbol, limit=500)
+    if hist and len(hist) > 0:
+        rates = [h['funding_rate'] for h in hist]
+        # 限制30天（根据时间戳筛选）
+        now_ts = time.time() * 1000
+        cutoff = now_ts - FUNDING_HISTORY_DAYS * 86400000
+        recent = [r for r in hist if r['timestamp'] >= cutoff]
+        if recent:
+            recent_rates = [r['funding_rate'] for r in recent]
+            percentile = sum(1 for r in recent_rates if r < rate) / len(recent_rates) * 100
+        else:
+            percentile = 50.0
+        result['percentile'] = percentile
+        # 趋势（最近3次）
+        if len(recent_rates) >= 3:
+            last3 = recent_rates[-3:]
+            if last3[0] < last3[1] < last3[2]:
+                trend = "持续攀升"
+            elif last3[0] > last3[1] > last3[2]:
+                trend = "持续下降"
+            else:
+                trend = "震荡"
+            result['trend'] = trend
+        else:
+            result['trend'] = "数据不足"
+    else:
+        result['percentile'] = 50.0
+        result['trend'] = "无历史"
+    return result
+
+# ==================== OI结构分析 ====================
+def analyze_oi(symbol):
+    oi_data = fetch_oi_hist_sync(symbol, period=OI_PERIOD, limit=OI_HISTORY_LIMIT)
+    if not oi_data or len(oi_data) < 2:
+        return None
+    current_oi = oi_data[-1]['oi_value']
+    # 24h变化
+    day_ago = None
+    for item in reversed(oi_data):
+        if item['timestamp'] <= time.time()*1000 - 86400000:
+            day_ago = item['oi_value']
+            break
+    if day_ago:
+        change_24h = (current_oi - day_ago) / day_ago * 100
+    else:
+        change_24h = 0
+    # OI-价格关系需要价格数据，在外部传入
+    return {
+        'current_oi': current_oi,
+        'change_24h': change_24h,
+        'oi_data': oi_data
+    }
+
+# ==================== 大户多空比分析 ====================
+def analyze_ls_ratio(symbol):
+    account_ratios = fetch_ls_ratio_account_sync(symbol, period=LS_RATIO_PERIOD, limit=LS_RATIO_LIMIT)
+    position_ratios = fetch_ls_ratio_position_sync(symbol, period=LS_RATIO_PERIOD, limit=LS_RATIO_LIMIT)
+    if not account_ratios or not position_ratios:
+        return None
+    last_account = account_ratios[-1]['ratio'] if account_ratios else 1.0
+    last_position = position_ratios[-1]['ratio'] if position_ratios else 1.0
+    # 趋势（最近3次）
+    if len(account_ratios) >= 3:
+        acc_vals = [r['ratio'] for r in account_ratios[-3:]]
+        if acc_vals[0] < acc_vals[1] < acc_vals[2]:
+            acc_trend = "持续上升"
+        elif acc_vals[0] > acc_vals[1] > acc_vals[2]:
+            acc_trend = "持续下降"
+        else:
+            acc_trend = "震荡"
+    else:
+        acc_trend = "数据不足"
+    return {
+        'account_ratio': last_account,
+        'position_ratio': last_position,
+        'acc_trend': acc_trend,
+        'account_ratios': account_ratios
+    }
+
+# ==================== 综合微观资金博弈分析（生成文本） ====================
+def generate_micro_analysis(symbol, funding, oi, ls_ratio, price_change_24h):
+    lines = []
+    lines.append("\n" + "="*80)
+    lines.append("【📊 微观结构与资金博弈分析】")
+    lines.append("="*80)
+
+    # 资金费率
+    if funding:
+        lines.append("\n💸 资金费率分析:")
+        rate = funding['current_rate']
+        lines.append(f"   当前费率: {rate:.4%} (每{funding['interval_hours']}小时结算一次")
+        if funding.get('next_funding_ts'):
+            remain_sec = max(0, (funding['next_funding_ts'] - time.time()*1000)/1000)
+            remain_min = int(remain_sec // 60)
+            lines.append(f"   下次结算约 {remain_min} 分钟后")
+        lines.append(f"   历史30天百分位: {funding['percentile']:.1f}%")
+        if funding['percentile'] >= FUNDING_EXTREME_PERCENTILE:
+            lines.append(f"   ⚠️ 极端拥挤，多头支付高昂")
+        elif funding['percentile'] >= 75:
+            lines.append(f"   🔴 偏高拥挤")
+        elif funding['percentile'] <= 10:
+            lines.append(f"   ⚠️ 极端恐慌，空头支付高昂")
+        lines.append(f"   费率趋势: {funding['trend']}")
+        if rate > FUNDING_HIGH_WARNING:
+            lines.append(f"   ⚠️ 多头支付极端高昂，持仓成本极高，多头过热信号，警惕回调。")
+        elif rate < FUNDING_LOW_WARNING:
+            lines.append(f"   ⚠️ 空头支付极端高昂，逼空风险高。")
+    else:
+        lines.append("\n💸 资金费率分析: 数据获取失败")
+
+    # OI分析
+    if oi and oi.get('current_oi'):
+        cur_oi = oi['current_oi']
+        change_24h = oi['change_24h']
+        lines.append("\n🔥 持仓量（OI）分析:")
+        lines.append(f"   当前OI: {cur_oi:.2f} USD (24h变化: {change_24h:+.1f}%)")
+        # OI与价格关系（需要价格变化，从外部传入）
+        if price_change_24h is not None:
+            if price_change_24h > 0 and change_24h > 0:
+                lines.append(f"   OI-价格关系: 价格涨 + OI增 → 新多头入场，趋势健康")
+            elif price_change_24h > 0 and change_24h < 0:
+                lines.append(f"   OI-价格关系: 价格涨 + OI降 → 空头平仓推升，上涨可能不可持续")
+            elif price_change_24h < 0 and change_24h > 0:
+                lines.append(f"   OI-价格关系: 价格跌 + OI增 → 新空头入场，下跌趋势健康")
+            elif price_change_24h < 0 and change_24h < 0:
+                lines.append(f"   OI-价格关系: 价格跌 + OI降 → 多头平仓砸盘，下跌可能衰竭")
+        # OI百分位（粗略，用最近30天的历史）
+        # 此处简化，可选
+        lines.append(f"   ⚠️ OI变化显著，市场分歧大" if abs(change_24h) > 15 else "")
+    else:
+        lines.append("\n🔥 持仓量（OI）分析: 数据获取失败")
+
+    # 大户多空比
+    if ls_ratio:
+        acc = ls_ratio['account_ratio']
+        pos = ls_ratio['position_ratio']
+        lines.append("\n🐋 大户多空比分析:")
+        lines.append(f"   大户账户数多空比: {acc:.2f} ({'多头账户占优' if acc>1 else '空头账户占优' if acc<1 else '平衡'})")
+        lines.append(f"   大户持仓量多空比: {pos:.2f} ({'多头持仓占优' if pos>1 else '空头持仓占优' if pos<1 else '平衡'})")
+        if acc > LS_RATIO_EXTREME_LONG and pos > LS_RATIO_EXTREME_LONG:
+            lines.append(f"   ⚠️ 大户多头极度拥挤，注意风险")
+        elif acc < LS_RATIO_EXTREME_SHORT and pos < LS_RATIO_EXTREME_SHORT:
+            lines.append(f"   ⚠️ 大户空头极度拥挤，逼空风险高")
+        if (acc > 1 and pos < 1) or (acc < 1 and pos > 1):
+            lines.append(f"   ⚠️ 账户偏多但持仓谨慎，大户内部存在分歧")
+        lines.append(f"   多空比趋势: {ls_ratio['acc_trend']}")
+    else:
+        lines.append("\n🐋 大户多空比分析: 数据获取失败")
+
+    # 综合评估
+    lines.append("\n【综合微观结构评估】")
+    risks = []
+    if funding and funding['percentile'] >= FUNDING_EXTREME_PERCENTILE:
+        risks.append("资金费率极端拥挤")
+    if oi and abs(oi.get('change_24h', 0)) > 15:
+        risks.append("OI大幅变动")
+    if ls_ratio and (ls_ratio['account_ratio'] > LS_RATIO_EXTREME_LONG or ls_ratio['account_ratio'] < LS_RATIO_EXTREME_SHORT):
+        risks.append("大户多空极端")
+    if risks:
+        lines.append(f"   ⚠️ 当前市场存在: {', '.join(risks)}，短期过热信号")
+    else:
+        lines.append(f"   ✅ 微观结构无明显极端信号")
+    if funding and funding['percentile'] >= FUNDING_EXTREME_PERCENTILE and oi and oi.get('change_24h', 0) > 0:
+        lines.append(f"   ⚠️ 费率极端 + OI增长，高成本杠杆多头堆积，回调风险大")
+    elif funding and funding['percentile'] <= 10 and oi and oi.get('change_24h', 0) > 0:
+        lines.append(f"   ⚠️ 费率极端 + OI增长，空头拥挤，逼空风险高")
+    else:
+        lines.append(f"   → 建议结合技术面进一步判断")
+
+    return "\n".join(lines)
+
+# ==================== 综合分析与短期策略参考（替代原K线短期建议） ====================
+def generate_comprehensive_strategy(symbol, period_results, funding, oi, ls_ratio, price_change_1h, delta_15m, vol_15m, micro_15m):
+    lines = []
+    lines.append("\n" + "="*80)
+    lines.append("【📋 综合分析与短期策略参考】（基于15分钟/1小时周期 + 资金博弈）")
+    lines.append("="*80)
+
+    data_15m = period_results.get("15m")
+    data_1h = period_results.get("1h")
+    if not data_15m or not data_1h:
+        lines.append("⚠️ 无法获取15分钟或1小时数据，暂时无法生成综合策略。")
+        return "\n".join(lines)
+
+    t15 = data_15m['trend']
+    t1h = data_1h['trend']
+    o15 = data_15m['orderflow']
+    v15 = data_15m['volatility']
+    micro15 = data_15m['micro']
+
+    lines.append(f"1️⃣ 方向判断（技术面）:")
+    lines.append(f"   15分钟{t15['short']['dir']}（斜率 {t15['short']['slope']:.2f}），1小时中期{t1h['mid']['dir']}。")
+    if t15['short']['dir'] == "上涨" and t1h['mid']['dir'] == "下跌":
+        lines.append(f"   → 短线反弹受制于中周期下跌趋势，追多需谨慎。")
+    elif t15['short']['dir'] == "下跌" and t1h['mid']['dir'] == "上涨":
+        lines.append(f"   → 短线回调但中周期向上，可等待企稳后低吸。")
+    else:
+        lines.append(f"   → 周期方向一致，顺势交易。")
+    # 补充资金面
+    if funding and funding['percentile'] >= 75:
+        lines.append(f"   补充资金面: 资金费率百分位{funding['percentile']:.1f}%（极端拥挤），追高风险加剧。")
+    elif funding and funding['percentile'] <= 25:
+        lines.append(f"   补充资金面: 资金费率低位，恐慌情绪存在，可能反弹。")
+
+    lines.append(f"\n2️⃣ 动能评估（技术面+订单流）:")
+    if o15['delta'] is not None:
+        lines.append(f"   15分钟Delta = {o15['delta']:.0f}（{'主动买强' if o15['delta']>0 else '主动卖强'}），强度 {o15['delta_strength']:.1f}%({o15['delta_strength_grade']})。")
+        if o15['delta_strength'] > 30 and o15['delta'] > 0:
+            lines.append(f"   → 主动买盘强劲，短期多头动能充足。")
+        elif o15['delta_strength'] > 30 and o15['delta'] < 0:
+            lines.append(f"   → 主动卖盘强劲，短期空头占优。")
+        else:
+            lines.append(f"   → 多空力量均衡，方向不明。")
+    # 资金面补充
+    if oi and abs(oi.get('change_24h', 0)) > 10:
+        lines.append(f"   补充资金面: 24h OI变化{oi['change_24h']:+.1f}%，资金大幅{'流入' if oi['change_24h']>0 else '流出'}。")
+
+    lines.append(f"\n3️⃣ 波动与结构:")
+    lines.append(f"   15分钟布林带宽度 {v15['bollinger_bandwidth']:.2f}%（{v15['bollinger_grade']}），波动扩张率 {v15['expansion_rate']:.1f}%。")
+    if "压缩" in v15['bollinger_grade']:
+        lines.append(f"   → 变盘在即，突破方向有待确认。")
+    else:
+        lines.append(f"   → 正常波动，维持当前趋势。")
+    if micro15['pattern']:
+        lines.append(f"   微观形态: {micro15['pattern']}，短期方向可能变化。")
+
+    lines.append(f"\n4️⃣ 综合资金面提示:")
+    if funding and funding['percentile'] >= FUNDING_EXTREME_PERCENTILE:
+        lines.append(f"   ⚠️ 资金费率百分位{funding['percentile']:.1f}%（极端拥挤）+ OI高位 → 市场过热，追高风险极大。")
+    if oi and oi.get('current_oi'):
+        lines.append(f"   ✅ 若价格回调后费率冷却、OI维持增长，则是健康调整；若放量下跌配合多头踩踏，则趋势可能反转。")
+
+    lines.append(f"\n5️⃣ 短期策略参考（非交易信号）:")
+    lines.append(f"   - 当前短线偏多但空间受限，叠加{'极端费率' if funding and funding['percentile']>=75 else '正常费率'}，建议等待回调至支撑区再观察。")
+    lines.append(f"   - 若15分钟跌破最近低点或Delta持续为负，则可能转为空头，需警惕踩踏。")
+    if funding and funding.get('next_funding_ts'):
+        lines.append(f"   - 关注下期资金费率结算（约{max(0,int((funding['next_funding_ts']-time.time()*1000)/60000))}分钟后），若费率大幅下降可缓解过热压力。")
+
+    return "\n".join(lines)
+
+# ==================== 完整报告生成（删除原短期建议，增加微观分析和综合策略） ====================
+def generate_full_report(symbol, period_results, overall, funding, oi, ls_ratio, price_change_24h, price_change_1h, delta_15m, vol_15m, micro_15m):
     lines = []
     lines.append(f"\n{'='*80}")
     lines.append(f"📊 市场行为特征分析报告 - {symbol}")
     lines.append(f"⏱️ 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append('='*80)
 
-    # ----- 总体价格特征 -----
+    # ----- 总体价格特征（不变） -----
     lines.append("\n【🌍 总体价格特征】")
     ov = overall['long']
     if not ov.get('error'):
@@ -881,7 +1211,7 @@ def generate_full_report(symbol, period_results, overall):
     else:
         lines.append("\n📅 近1个月（日K线）：无法获取数据")
 
-    # ----- 四周期状态对比表 -----
+    # ----- 四周期状态对比表（不变） -----
     lines.append("\n【📈 四周期状态对比表】")
     header = f"{'周期':<6} {'趋势方向':<22} {'强度':<10} {'价格位置':<10} {'波动状态':<10} {'结构':<12} {'综合评语'}"
     lines.append(header)
@@ -900,7 +1230,6 @@ def generate_full_report(symbol, period_results, overall):
         price_pos = f"{t['price_position']['pct']:.0f}%({t['price_position']['grade'][:2]})" if t['price_position']['pct'] else '--'
         vol_exp = data['volatility']['expansion_grade'][:4] if data['volatility']['expansion_grade'] else '--'
         struct_raw = data['structure']['swing_structure']
-        # 将结构描述转为自然语言
         if "HH+HL" in struct_raw:
             struct = "上升结构"
         elif "LH+LL" in struct_raw:
@@ -941,7 +1270,7 @@ def generate_full_report(symbol, period_results, overall):
         lines.append(f"{period_name:<6} {trend_str:<22} {strength:<10} {price_pos:<10} {vol_exp:<10} {struct:<12} {comment}")
     lines.append("-"*110)
 
-    # ----- 各周期详细分析 -----
+    # ----- 各周期详细分析（不含原短期建议） -----
     for period_name, data in period_results.items():
         if data is None:
             continue
@@ -950,7 +1279,6 @@ def generate_full_report(symbol, period_results, overall):
         lines.append(f"【🔍 {period_name}周期详细分析】")
         lines.append('='*80)
         t = data['trend']
-        # 生成时间描述
         short_time = _get_time_desc(period_name, cfg.get('short', 0))
         mid_time = _get_time_desc(period_name, cfg.get('mid', 0))
         long_time = _get_time_desc(period_name, cfg.get('long', 0))
@@ -1009,7 +1337,6 @@ def generate_full_report(symbol, period_results, overall):
         lines.append(f"   成交量趋势: {vol['trend']}")
         lines.append(f"   极值: {'是' if vol['extreme'] else '否'}  聚类: {'有' if vol['cluster'] else '无'}")
         s = data['structure']
-        # 自然语言化结构描述
         swing_desc = s['swing_structure']
         if "HH+HL" in swing_desc:
             swing_desc = "高点抬高且低点抬高（上升结构）"
@@ -1019,7 +1346,6 @@ def generate_full_report(symbol, period_results, overall):
             swing_desc = "无明显结构（震荡）"
         lines.append(f"\n🏗️ 结构特征:")
         lines.append(f"   高低点结构: {swing_desc}")
-        # 突破描述自然语言化
         break_dir = s['breakout_direction']
         if break_dir == "向上突破":
             break_desc = f"向上突破（{s['breakout_effectiveness']}）"
@@ -1047,51 +1373,20 @@ def generate_full_report(symbol, period_results, overall):
         if e['energy_exhaustion']:
             lines.append(f"   ⚠️ 解读: 价格创新高但动能衰减，警惕回调。")
 
-    # ----- 短期观察建议 -----
-    lines.append(f"\n{'='*80}")
-    lines.append("【📋 短期观察建议（基于15分钟和1小时）】")
-    lines.append('='*80)
-    data_15m = period_results.get("15m")
-    data_1h = period_results.get("1h")
-    if data_15m and data_1h:
-        t15 = data_15m['trend']
-        t1h = data_1h['trend']
-        o15 = data_15m['orderflow']
-        v15 = data_15m['volatility']
-        micro15 = data_15m['micro']
-        lines.append(f"1️⃣ 方向判断: 15分钟{ t15['short']['dir'] }（斜率 {t15['short']['slope']:.2f}），1小时中期{ t1h['mid']['dir'] }。")
-        if t15['short']['dir'] == "上涨" and t1h['mid']['dir'] == "下跌":
-            lines.append(f"   → 短线反弹受制于中周期下跌趋势，追多需谨慎。")
-        elif t15['short']['dir'] == "下跌" and t1h['mid']['dir'] == "上涨":
-            lines.append(f"   → 短线回调但中周期向上，可等待企稳后低吸。")
-        else:
-            lines.append(f"   → 周期方向一致，顺势交易。")
-        if o15['delta'] is not None:
-            lines.append(f"2️⃣ 动能评估: Delta = {o15['delta']:.0f}（{'主动买强' if o15['delta']>0 else '主动卖强'}），强度 {o15['delta_strength']:.1f}%({o15['delta_strength_grade']})。")
-            if o15['delta_strength'] > 30 and o15['delta'] > 0:
-                lines.append(f"   → 主动买盘强劲，短期多头动能充足。")
-            elif o15['delta_strength'] > 30 and o15['delta'] < 0:
-                lines.append(f"   → 主动卖盘强劲，短期空头占优。")
-            else:
-                lines.append(f"   → 多空力量均衡，方向不明。")
-        lines.append(f"3️⃣ 波动状态: 布林带宽度 {v15['bollinger_bandwidth']:.2f}%（{v15['bollinger_grade']}），波动扩张率 {v15['expansion_rate']:.1f}%。")
-        if "压缩" in v15['bollinger_grade']:
-            lines.append(f"   → 变盘在即，突破方向有待确认。")
-        else:
-            lines.append(f"   → 正常波动，维持当前趋势。")
-        if micro15['body_ratio'] is not None:
-            lines.append(f"4️⃣ 微观形态: 最新K线{'阳线' if micro15['body_ratio']>0 else '阴线'}，实体{micro15['body_grade']}，{micro15['pattern']}。")
-            if "吞没" in micro15['pattern']:
-                lines.append(f"   → 出现反转形态，短期方向可能改变。")
-        lines.append(f"5️⃣ 综合策略: 多周期方向{'一致' if t15['short']['dir']==t1h['mid']['dir'] else '矛盾'}，建议等待方向确认。")
-    else:
-        lines.append("⚠️ 无法获取15分钟或1小时数据，暂时无法生成短期建议。")
+    # ----- 微观结构与资金博弈分析（新增）-----
+    micro_analysis = generate_micro_analysis(symbol, funding, oi, ls_ratio, price_change_24h)
+    lines.append(micro_analysis)
+
+    # ----- 综合分析与短期策略参考（替代原K线短期建议）-----
+    strategy = generate_comprehensive_strategy(symbol, period_results, funding, oi, ls_ratio, price_change_1h, delta_15m, vol_15m, micro_15m)
+    lines.append(strategy)
 
     return "\n".join(lines)
 
 # ==================== 单个币种完整分析（新） ====================
 def analyze_single_symbol(symbol):
     """生成单个币种的完整市场分析报告（文本）"""
+    # 1. K线周期分析
     period_results = {}
     for period_cfg in PERIODS:
         klines = fetch_klines_sync(symbol, period_cfg["interval"], period_cfg["min_klines"])
@@ -1099,8 +1394,30 @@ def analyze_single_symbol(symbol):
             period_results[period_cfg["name"]] = None
         else:
             period_results[period_cfg["name"]] = analyze_period(klines, period_cfg)
+    # 2. 总体价格特征
     overall = calc_overall_price_features_sync(symbol)
-    return generate_full_report(symbol, period_results, overall)
+    # 3. 资金费率分析
+    funding = analyze_funding(symbol)
+    # 4. OI分析
+    oi = analyze_oi(symbol)
+    # 5. 大户多空比分析
+    ls_ratio = analyze_ls_ratio(symbol)
+    # 6. 获取24h价格变化（用于OI-价格关系）
+    ticker = fetch_url(f"https://fapi.binance.com/fapi/v1/ticker/24hr?symbol={symbol}")
+    price_change_24h = float(ticker.get("priceChangePercent", 0)) if ticker else 0
+    # 7. 获取1h价格变化（用于短期建议）
+    df_1h = fetch_klines_sync(symbol, "1h", 2)
+    if df_1h and len(df_1h) >= 2:
+        price_change_1h = (df_1h[-1]['close'] - df_1h[-2]['close']) / df_1h[-2]['close'] * 100
+    else:
+        price_change_1h = 0
+    # 8. 提取15m的Delta和波动率用于综合策略
+    data_15m = period_results.get("15m")
+    delta_15m = data_15m['orderflow']['delta'] if data_15m and data_15m['orderflow']['delta'] is not None else 0
+    vol_15m = data_15m['volatility'] if data_15m else None
+    micro_15m = data_15m['micro'] if data_15m else None
+
+    return generate_full_report(symbol, period_results, overall, funding, oi, ls_ratio, price_change_24h, price_change_1h, delta_15m, vol_15m, micro_15m)
 
 # ======================== 保留原有的选币逻辑和对外接口 ========================
 HEADERS = {
@@ -1174,26 +1491,21 @@ def run_topic(target_symbol=None):
     memory = clean_expired_memory(memory)
     rec = memory.get(symbol, {"symbol": symbol, "count_24h": 0})
     if rec.get("count_24h", 0) >= MAX_PER_SYMBOL_24H:
-        # 已达上限，重新选择
         for _ in range(10):
             symbol = random.choice([d["symbol"] for d in top20])
             rec = memory.get(symbol, {"symbol": symbol, "count_24h": 0})
             if rec.get("count_24h", 0) < MAX_PER_SYMBOL_24H:
                 break
-    # 冷却检查
     last_time = rec.get("last_time")
     if last_time:
         delta = (now() - parse_time(last_time)).total_seconds() / 60
         if delta < COOLDOWN_MINUTES:
-            # 冷却期内不能发文，直接返回空
             return None
-    # 更新内存
     rec["last_time"] = now().isoformat()
     rec["count_24h"] = rec.get("count_24h", 0) + 1
     memory[symbol] = rec
     save_json(HISTORY_FILE, list(memory.values()))
 
-    # 生成深度报告
     topic_text = analyze_single_symbol(symbol)
     if not topic_text:
         return None
@@ -1219,7 +1531,6 @@ def run_topic(target_symbol=None):
     }
 
 def get_single_symbol_topic(symbol):
-    """手动模式专用接口（与原有兼容）"""
     topic_text = analyze_single_symbol(symbol)
     if not topic_text:
         return {"text": "获取失败"}
