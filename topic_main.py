@@ -1145,7 +1145,7 @@ def generate_comprehensive_strategy(symbol, period_results, funding, oi, ls_rati
     return "\n".join(lines)
 
 # ==================== 完整报告生成（删除原短期建议，增加微观分析和综合策略） ====================
-def generate_full_report(symbol, period_results, overall, funding, oi, ls_ratio, price_change_24h, price_change_1h, delta_15m, vol_15m, micro_15m):
+def generate_full_report_verbose(symbol, period_results, overall, funding, oi, ls_ratio, price_change_24h, price_change_1h, delta_15m, vol_15m, micro_15m):
     lines = []
     lines.append(f"\n{'='*80}")
     lines.append(f"📊 市场行为特征分析报告 - {symbol}")
@@ -1210,6 +1210,7 @@ def generate_full_report(symbol, period_results, overall, funding, oi, ls_ratio,
             lines.append(f"   ⚠️ 注意：该币种上市仅 {ov['count']} 天，数据不足30天。")
     else:
         lines.append("\n📅 近1个月（日K线）：无法获取数据")
+    
 
     # ----- 四周期状态对比表（不变） -----
     lines.append("\n【📈 四周期状态对比表】")
@@ -1384,7 +1385,7 @@ def generate_full_report(symbol, period_results, overall, funding, oi, ls_ratio,
     return "\n".join(lines)
 
 # ==================== 单个币种完整分析（新） ====================
-def analyze_single_symbol(symbol):
+def analyze_single_symbol(symbol, verbose=False):
     """生成单个币种的完整市场分析报告（文本）"""
     # 1. K线周期分析
     period_results = {}
@@ -1417,8 +1418,138 @@ def analyze_single_symbol(symbol):
     vol_15m = data_15m['volatility'] if data_15m else None
     micro_15m = data_15m['micro'] if data_15m else None
 
-    return generate_full_report(symbol, period_results, overall, funding, oi, ls_ratio, price_change_24h, price_change_1h, delta_15m, vol_15m, micro_15m)
-
+    if verbose:
+        return generate_full_report_verbose(symbol, period_results, overall, funding, oi, ls_ratio,
+                                             price_change_24h, price_change_1h, delta_15m, vol_15m, micro_15m)
+    else:
+        return generate_full_report_compact(symbol, period_results, overall, funding, oi, ls_ratio,
+                                            price_change_24h, price_change_1h, delta_15m, vol_15m, micro_15m)
+def generate_full_report_compact(symbol, period_results, overall, funding, oi, ls_ratio, price_change_24h, price_change_1h, delta_15m, vol_15m, micro_15m):
+    """精简版报告，大幅减少 token 消耗"""
+    lines = []
+    lines.append(f"\n{'='*50}\n📊 {symbol} 市场快报\n{'='*50}")
+    
+    # 总体价格特征（三行精简）
+    for label, key in [("近2年","long"), ("近3月","mid"), ("近1月","short")]:
+        ov = overall.get(key)
+        if ov and not ov.get('error'):
+            suff = f"(仅{ov['count']}个)" if not ov.get('sufficient', True) else ""
+            lines.append(f"📅{label}{suff}: 现价{ov['current']} | 高{ov['high']}({ov['high_time']}) | 低{ov['low']}({ov['low_time']}) | 分位{ov['pct']:.0f}% {ov['grade']}")
+            if ov['pct'] >= 80:
+                lines[-1] += " 🔴"
+            elif ov['pct'] <= 20:
+                lines[-1] += " 🟢"
+    
+    # 四周期状态表
+    lines.append("\n【周期状态】")
+    header = f"{'周期':<6} {'趋势':<12} {'强度':<8} {'价位':<8} {'波动':<8} {'结构':<8}"
+    lines.append(header)
+    lines.append("-"*60)
+    period_configs = {p["name"]: p for p in PERIODS}
+    for pname, data in period_results.items():
+        if data is None:
+            lines.append(f"{pname:<6} 数据不足")
+            continue
+        t = data['trend']
+        short_dir = {'上涨':'↑','下跌':'↓','横盘':'→'}.get(t['short']['dir'], '?')
+        mid_dir = {'上涨':'↑','下跌':'↓','横盘':'→'}.get(t['mid']['dir'], '?')
+        long_dir = {'上涨':'↑','下跌':'↓','横盘':'→'}.get(t['long']['dir'], '?')
+        trend_str = f"{short_dir}{mid_dir}{long_dir}"
+        strength = f"{t['strength']['score']:.0f}%"
+        price_pos = f"{t['price_position']['pct']:.0f}%"
+        vol_exp = data['volatility']['expansion_grade'][:2] if data['volatility']['expansion_grade'] else '--'
+        struct_raw = data['structure']['swing_structure']
+        if "HH+HL" in struct_raw:
+            struct = "上升"
+        elif "LH+LL" in struct_raw:
+            struct = "下降"
+        elif "杂乱" in struct_raw:
+            struct = "震荡"
+        else:
+            struct = struct_raw[:4]
+        lines.append(f"{pname:<6} {trend_str:<12} {strength:<8} {price_pos:<8} {vol_exp:<8} {struct:<8}")
+    
+    # 核心周期指标（合并为一个表格）
+    lines.append("\n【关键指标】")
+    lines.append("周期   方向   强度%  价位%   Delta   主动比%  相对量   形态")
+    for pname in ['15m', '1h', '4h', '1d']:
+        data = period_results.get(pname)
+        if not data:
+            continue
+        t = data['trend']
+        short_dir = {'上涨':'↑','下跌':'↓','横盘':'→'}.get(t['short']['dir'], '-')
+        strength = f"{t['strength']['score']:.0f}"
+        price_pos = f"{t['price_position']['pct']:.0f}"
+        delta = f"{data['orderflow']['delta']:.0f}" if data['orderflow']['delta'] is not None else '-'
+        active = f"{data['orderflow']['active_buy_ratio']:.0f}" if data['orderflow']['active_buy_ratio'] else '-'
+        vol_ratio = f"{data['volume']['relative_ratio']:.1f}x"
+        pattern = data['micro']['pattern'][:4] if data['micro']['pattern'] and data['micro']['pattern'] != '无' else '-'
+        lines.append(f"{pname:<6} {short_dir:<4} {strength:<6} {price_pos:<6} {delta:<7} {active:<8} {vol_ratio:<7} {pattern}")
+    
+    # 资金博弈分析（精简要点）
+    lines.append("\n【资金博弈】")
+    if funding:
+        rate = funding['current_rate']
+        percentile = funding['percentile']
+        trend = funding['trend']
+        warn = ''
+        if percentile >= 90:
+            warn = ' ⚠️极端拥挤'
+        elif percentile >= 75:
+            warn = ' 🔴偏高'
+        elif percentile <= 10:
+            warn = ' ⚠️极端恐慌'
+        lines.append(f"💰费率: {rate:.4%} (分位{percentile:.0f}% {trend}){warn}")
+    if oi:
+        cur_oi = oi['current_oi']
+        change = oi['change_24h']
+        lines.append(f"🔥OI: {cur_oi:.1f}M ({change:+.1f}%)")
+        if price_change_24h is not None and change != 0:
+            if price_change_24h > 0 and change > 0:
+                lines.append(f"   价涨OI增 → 新多入场")
+            elif price_change_24h > 0 and change < 0:
+                lines.append(f"   价涨OI降 → 空头平仓")
+            elif price_change_24h < 0 and change > 0:
+                lines.append(f"   价跌OI增 → 新空入场")
+            elif price_change_24h < 0 and change < 0:
+                lines.append(f"   价跌OI降 → 多头平仓")
+    if ls_ratio:
+        acc = ls_ratio['account_ratio']
+        pos = ls_ratio['position_ratio']
+        lines.append(f"🐋大户多空: 账户{acc:.2f} 持仓{pos:.2f} 趋势{ls_ratio['acc_trend']}")
+        if acc > 1.5 and pos > 1.5:
+            lines.append("   ⚠️大户多头拥挤")
+        elif acc < 0.6 and pos < 0.6:
+            lines.append("   ⚠️大户空头拥挤")
+    
+    # 综合策略（精简为一行结论）
+    lines.append("\n【策略参考】")
+    data_15m = period_results.get("15m")
+    data_1h = period_results.get("1h")
+    if data_15m and data_1h:
+        t15_dir = data_15m['trend']['short']['dir']
+        t1h_dir = data_1h['trend']['mid']['dir']
+        if t15_dir == "上涨" and t1h_dir == "下跌":
+            advice = "短线反弹受制中周期下跌，追多谨慎"
+        elif t15_dir == "下跌" and t1h_dir == "上涨":
+            advice = "短线回调但中周期向上，等待企稳低吸"
+        else:
+            advice = f"周期方向一致，顺势{t15_dir}交易"
+        risks = []
+        if funding and funding.get('percentile',0) >= 90:
+            risks.append("费率极端")
+        if oi and abs(oi.get('change_24h',0)) > 15:
+            risks.append("OI剧变")
+        if ls_ratio and (ls_ratio.get('account_ratio',1) > 1.5 or ls_ratio.get('account_ratio',1) < 0.6):
+            risks.append("大户极端")
+        if risks:
+            advice += f" | 风险: {','.join(risks)}"
+        lines.append(f"📌 {advice}")
+    else:
+        lines.append("📌 数据不足，无法生成策略")
+    
+    lines.append(f"⏱️ {time.strftime('%Y-%m-%d %H:%M')}")
+    return "\n".join(lines)
 # ======================== 保留原有的选币逻辑和对外接口 ========================
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
@@ -1453,15 +1584,16 @@ def clean_expired_memory(memory):
             cleaned[sym] = {"symbol": sym, "count_24h": 0, "last_time": current.isoformat()}
     return cleaned
 
-def run_topic(target_symbol=None):
+def run_topic(target_symbol=None, verbose=False):
     """
     自动模式：随机选币生成深度报告
     手动模式：指定交易对生成深度报告
     返回格式：{"symbol": str, "text": str, "change": float, "volume_ratio": float, "news": str}
+    verbose: True 输出详细版，False 输出精简版（默认）
     """
     # 手动模式
     if target_symbol and target_symbol.strip():
-        topic_text = analyze_single_symbol(target_symbol)
+        topic_text = analyze_single_symbol(target_symbol, verbose=verbose)
         if not topic_text:
             return {"symbol": target_symbol, "text": "获取行情失败", "change": 0, "volume_ratio": 1.0, "news": ""}
         return {
@@ -1471,8 +1603,7 @@ def run_topic(target_symbol=None):
             "volume_ratio": random.uniform(0.5, 2.0),
             "news": ""
         }
-
-    # 自动模式：原选币逻辑
+    # 自动模式（原逻辑不变，默认 verbose=False）
     ticker = fetch_url("https://fapi.binance.com/fapi/v1/ticker/24hr")
     exchange_info = fetch_url("https://fapi.binance.com/fapi/v1/exchangeInfo")
     if not ticker or not exchange_info:
@@ -1506,7 +1637,7 @@ def run_topic(target_symbol=None):
     memory[symbol] = rec
     save_json(HISTORY_FILE, list(memory.values()))
 
-    topic_text = analyze_single_symbol(symbol)
+    topic_text = analyze_single_symbol(symbol, verbose=verbose)   # 自动模式也支持 verbose，但默认 False
     if not topic_text:
         return None
 
