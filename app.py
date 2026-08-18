@@ -1,12 +1,26 @@
-from flask import Flask, render_template_string, request, jsonify, Response, make_response
-import os
-import json
 import datetime
+import json
+import os
 import threading
 import time
+import traceback
 import urllib.parse
-
-from schedule_core import can_publish, get_random_interval, inc_auto_published, inc_manual_published, get_daily_stats, set_daily_stats
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    make_response,
+    render_template_string,
+    request,
+)
+from schedule_core import (
+    can_publish,
+    get_daily_stats,
+    get_random_interval,
+    inc_auto_published,
+    inc_manual_published,
+    set_daily_stats,
+)
 
 app = Flask(__name__)
 
@@ -26,234 +40,292 @@ os.makedirs(DATA_DIR, exist_ok=True)
 account_running_status = {}
 status_lock = threading.Lock()
 
+
 def load_global_config():
-    return load_json(GLOBAL_CONFIG_FILE, {"manual_verbose_mode": False})
+  return load_json(GLOBAL_CONFIG_FILE, {"manual_verbose_mode": False})
+
 
 def save_global_config(config):
-    save_json(GLOBAL_CONFIG_FILE, config)
+  save_json(GLOBAL_CONFIG_FILE, config)
+
 
 def get_manual_verbose_mode():
-    cfg = load_global_config()
-    return cfg.get("manual_verbose_mode", False)
+  cfg = load_global_config()
+  return cfg.get("manual_verbose_mode", False)
+
 
 def set_manual_verbose_mode(enabled):
-    cfg = load_global_config()
-    cfg["manual_verbose_mode"] = enabled
-    save_global_config(cfg)
+  cfg = load_global_config()
+  cfg["manual_verbose_mode"] = enabled
+  save_global_config(cfg)
+
 
 def load_json(file_path, default=None):
-    if default is None:
-        default = {}
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return default
+  if default is None:
+    default = {}
+  try:
+    with open(file_path, "r", encoding="utf-8") as f:
+      return json.load(f)
+  except:
+    return default
+
 
 def save_json(file_path, data):
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+  with open(file_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 def recover_counts_from_records():
-    today = str(datetime.date.today())
-    db = load_json(DB_FILE, [])
-    auto_counts = {}
-    manual_counts = {}
-    for record in db:
-        if record.get("date") == today and record.get("status") == "success":
-            acc = record.get("account")
-            mode = record.get("mode")
-            if not acc:
-                continue
-            if mode == "auto":
-                auto_counts[acc] = auto_counts.get(acc, 0) + 1
-            elif mode in ["manual", "article"]:
-                manual_counts[acc] = manual_counts.get(acc, 0) + 1
-    accounts = get_all_accounts()
-    for acc in accounts:
-        acc_name = acc["name"]
-        auto_pub = auto_counts.get(acc_name, 0)
-        manual_pub = manual_counts.get(acc_name, 0)
-        set_daily_stats(acc_name, acc, auto_published=auto_pub, manual_published=manual_pub)
-    print(f"[启动恢复] 已恢复今日发文计数: auto={auto_counts}, manual={manual_counts}")
+  today = str(datetime.date.today())
+  db = load_json(DB_FILE, [])
+  auto_counts = {}
+  manual_counts = {}
+  for record in db:
+    if record.get("date") == today and record.get("status") == "success":
+      acc = record.get("account")
+      mode = record.get("mode")
+      if not acc:
+        continue
+      if mode == "auto":
+        auto_counts[acc] = auto_counts.get(acc, 0) + 1
+      elif mode in ["manual", "article"]:
+        manual_counts[acc] = manual_counts.get(acc, 0) + 1
+  accounts = get_all_accounts()
+  for acc in accounts:
+    acc_name = acc["name"]
+    auto_pub = auto_counts.get(acc_name, 0)
+    manual_pub = manual_counts.get(acc_name, 0)
+    set_daily_stats(
+        acc_name, acc, auto_published=auto_pub, manual_published=manual_pub
+    )
+  print(
+      f"[启动恢复] 已恢复今日发文计数: auto={auto_counts},"
+      f" manual={manual_counts}"
+  )
+
 
 def get_accounts_from_env():
-    accounts_env = os.getenv("BINANCE_ACCOUNTS", "").strip()
-    accounts = []
-    if not accounts_env:
-        return accounts
-    
-    for item in accounts_env.split(","):
-        item = item.strip()
-        if "|" not in item:
-            continue
-        name, key = item.split("|", 1)
-        name = name.strip()
-        key = key.strip()
-        if name and key:
-            accounts.append({"name": name, "key": key})
+  accounts_env = os.getenv("BINANCE_ACCOUNTS", "").strip()
+  accounts = []
+  if not accounts_env:
     return accounts
+
+  for item in accounts_env.split(","):
+    item = item.strip()
+    if "|" not in item:
+      continue
+    name, key = item.split("|", 1)
+    name = name.strip()
+    key = key.strip()
+    if name and key:
+      accounts.append({"name": name, "key": key})
+  return accounts
+
 
 def get_all_accounts():
-    env_accounts = get_accounts_from_env()
-    prompts = load_json(PROMPT_FILE)
-    accounts = []
-    for acc in env_accounts:
-        acc_name = acc["name"]
-        acc_config = prompts.get(acc_name, {})
-        with status_lock:
-            running = account_running_status.get(acc_name, False)
-        
-        accounts.append({
-            "name": acc_name,
-            "key": acc["key"],
-            "prompt": acc_config.get("prompt", ""),
-            "model_type": acc_config.get("model_type", "zhipu"),
-            "daily_limit": acc_config.get("daily_limit", DEFAULT_DAILY_LIMIT),
-            "auto_interval": acc_config.get("auto_interval", DEFAULT_AUTO_INTERVAL),
-            "schedule": acc_config.get("schedule", {}),
-            "running": running
-        })
-    return accounts
+  env_accounts = get_accounts_from_env()
+  prompts = load_json(PROMPT_FILE)
+  accounts = []
+  for acc in env_accounts:
+    acc_name = acc["name"]
+    acc_config = prompts.get(acc_name, {})
+    with status_lock:
+      running = account_running_status.get(acc_name, False)
+
+    accounts.append({
+        "name": acc_name,
+        "key": acc["key"],
+        "prompt": acc_config.get("prompt", ""),
+        "model_type": acc_config.get("model_type", "zhipu"),
+        "daily_limit": acc_config.get("daily_limit", DEFAULT_DAILY_LIMIT),
+        "auto_interval": acc_config.get(
+            "auto_interval", DEFAULT_AUTO_INTERVAL
+        ),
+        "schedule": acc_config.get("schedule", {}),
+        "running": running,
+    })
+  return accounts
+
 
 def get_account_by_name(name):
-    for acc in get_all_accounts():
-        if acc["name"] == name:
-            return acc
-    return None
+  for acc in get_all_accounts():
+    if acc["name"] == name:
+      return acc
+  return None
+
 
 def get_account_by_key(key):
-    for acc in get_all_accounts():
-        if acc["key"] == key:
-            return acc
-    return None
+  for acc in get_all_accounts():
+    if acc["key"] == key:
+      return acc
+  return None
 
-def save_account_prompt(account_name, prompt, daily_limit, auto_interval, model_type="zhipu", schedule=None):
-    prompts = load_json(PROMPT_FILE)
-    data = {
-        "prompt": prompt,
-        "model_type": model_type,
-        "daily_limit": int(daily_limit),
-        "auto_interval": int(auto_interval)
-    }
-    if schedule is not None:
-        data["schedule"] = schedule
-    prompts[account_name] = data
-    save_json(PROMPT_FILE, prompts)
 
-def save_post_record(mode, account_name, symbol, content, post_id, status="success"):
-    record = {
-        "mode": mode,
-        "account": account_name,
-        "date": str(datetime.date.today()),
-        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "symbol": symbol,
-        "content": content,
-        "post_id": post_id,
-        "status": status
-    }
-    db = load_json(DB_FILE, [])
-    db.append(record)
-    MAX_RECORDS = 1000
-    if len(db) > MAX_RECORDS:
-        db = db[-MAX_RECORDS:]
-    save_json(DB_FILE, db)
+def save_account_prompt(
+    account_name,
+    prompt,
+    daily_limit,
+    auto_interval,
+    model_type="zhipu",
+    schedule=None,
+):
+  prompts = load_json(PROMPT_FILE)
+  data = {
+      "prompt": prompt,
+      "model_type": model_type,
+      "daily_limit": int(daily_limit),
+      "auto_interval": int(auto_interval),
+  }
+  if schedule is not None:
+    data["schedule"] = schedule
+  prompts[account_name] = data
+  save_json(PROMPT_FILE, prompts)
+
+
+def save_post_record(
+    mode, account_name, symbol, content, post_id, status="success"
+):
+  record = {
+      "mode": mode,
+      "account": account_name,
+      "date": str(datetime.date.today()),
+      "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+      "symbol": symbol,
+      "content": content,
+      "post_id": post_id,
+      "status": status,
+  }
+  db = load_json(DB_FILE, [])
+  db.append(record)
+  MAX_RECORDS = 1000
+  if len(db) > MAX_RECORDS:
+    db = db[-MAX_RECORDS:]
+  save_json(DB_FILE, db)
+
 
 def get_today_stats(account_name=None):
-    accounts = get_all_accounts()
-    stats = {}
-    for acc in accounts:
-        acc_name = acc["name"]
-        auto_target, auto_pub, manual_pub = get_daily_stats(acc_name, acc)
-        stats[acc_name] = {
-            "auto_target": auto_target,
-            "auto_count": auto_pub,
-            "manual_count": manual_pub,
-            "running": acc["running"]
-        }
-    if account_name:
-        return stats.get(account_name, {"auto_target": 0, "auto_count": 0, "manual_count": 0, "running": False})
-    return stats
+  accounts = get_all_accounts()
+  stats = {}
+  for acc in accounts:
+    acc_name = acc["name"]
+    auto_target, auto_pub, manual_pub = get_daily_stats(acc_name, acc)
+    stats[acc_name] = {
+        "auto_target": auto_target,
+        "auto_count": auto_pub,
+        "manual_count": manual_pub,
+        "running": acc["running"],
+    }
+  if account_name:
+    return stats.get(
+        account_name,
+        {
+            "auto_target": 0,
+            "auto_count": 0,
+            "manual_count": 0,
+            "running": False,
+        },
+    )
+  return stats
+
 
 def delete_records(account=None, date=None, all_records=False):
-    db = load_json(DB_FILE, [])
-    if all_records:
-        new_db = []
-    else:
-        new_db = []
-        for record in db:
-            if account and record.get("account") == account:
-                if date and record.get("date") == date:
-                    continue
-                elif not date:
-                    continue
-            elif date and record.get("date") == date and not account:
-                continue
-            new_db.append(record)
-    save_json(DB_FILE, new_db)
-    return len(db) - len(new_db)
+  db = load_json(DB_FILE, [])
+  if all_records:
+    new_db = []
+  else:
+    new_db = []
+    for record in db:
+      if account and record.get("account") == account:
+        if date and record.get("date") == date:
+          continue
+        elif not date:
+          continue
+      elif date and record.get("date") == date and not account:
+        continue
+      new_db.append(record)
+  save_json(DB_FILE, new_db)
+  return len(db) - len(new_db)
+
 
 def auto_publisher_worker(account_name):
-    while True:
-        with status_lock:
-            if not account_running_status.get(account_name, False):
-                break
-        current_acc = get_account_by_name(account_name)
-        if not current_acc or not can_publish(account_name, current_acc):
-            time.sleep(30)
-            continue
+  while True:
+    with status_lock:
+      if not account_running_status.get(account_name, False):
+        break
+    current_acc = get_account_by_name(account_name)
+    if not current_acc or not can_publish(account_name, current_acc):
+      time.sleep(30)
+      continue
 
-        try:
-            from topic_main import run_topic
-            topic = run_topic()
-            if not topic:
-                time.sleep(10)
-                continue
-            from ai_core import generate_content
-            content, _ = generate_content(
-                topic,
-                api_key=ZHIPU_API_KEY if current_acc["model_type"] == "zhipu" else DEEPSEEK_API_KEY,
-                model_type=current_acc["model_type"],
-                custom_prompt=current_acc["prompt"]
-            )
-            if not content:
-                time.sleep(10)
-                continue
-            from post_main import post_content
-            ok, msg, post_id = post_content(content, current_acc["key"])
-            post_id_str = str(post_id) if post_id else "未知ID"
-            if ok:
-                save_post_record("auto", account_name, topic.get("symbol", ""), content, post_id_str)
-                cfg = load_json(CONFIG_FILE)
-                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                cfg[f"{account_name}_last_run"] = now_str
-                cfg[f"{account_name}_last_auto_run"] = now_str
-                save_json(CONFIG_FILE, cfg)
-                inc_auto_published(account_name)
+    try:
+      from topic_main import run_topic
 
-            schedule_cfg = current_acc.get("schedule", {})
-            sleep_min = get_random_interval(
-                schedule_cfg.get("interval_min", 8),
-                schedule_cfg.get("interval_max", 25)
-            )
-            time.sleep(sleep_min * 60)
-        except Exception as e:
-            print("自动异常：", e)
-            time.sleep(10)
+      topic = run_topic()
+      if not topic:
+        time.sleep(10)
+        continue
+      from ai_core import generate_content
+
+      content, _ = generate_content(
+          topic,
+          api_key=(
+              ZHIPU_API_KEY
+              if current_acc["model_type"] == "zhipu"
+              else DEEPSEEK_API_KEY
+          ),
+          model_type=current_acc["model_type"],
+          custom_prompt=current_acc["prompt"],
+      )
+      if not content:
+        time.sleep(10)
+        continue
+      from post_main import post_content
+
+      ok, msg, post_id = post_content(content, current_acc["key"])
+      post_id_str = str(post_id) if post_id else "未知ID"
+      if ok:
+        save_post_record(
+            "auto",
+            account_name,
+            topic.get("symbol", ""),
+            content,
+            post_id_str,
+        )
+        cfg = load_json(CONFIG_FILE)
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cfg[f"{account_name}_last_run"] = now_str
+        cfg[f"{account_name}_last_auto_run"] = now_str
+        save_json(CONFIG_FILE, cfg)
+        inc_auto_published(account_name)
+
+      schedule_cfg = current_acc.get("schedule", {})
+      sleep_min = get_random_interval(
+          schedule_cfg.get("interval_min", 8),
+          schedule_cfg.get("interval_max", 25),
+      )
+      time.sleep(sleep_min * 60)
+    except Exception as e:
+      print("自动异常：", e)
+      time.sleep(10)
+
 
 def start_account_auto_publish(account_name):
-    with status_lock:
-        if account_running_status.get(account_name, False):
-            return False
-        account_running_status[account_name] = True
-    t = threading.Thread(target=auto_publisher_worker, args=(account_name,), daemon=True)
-    t.start()
-    return True
+  with status_lock:
+    if account_running_status.get(account_name, False):
+      return False
+    account_running_status[account_name] = True
+  t = threading.Thread(
+      target=auto_publisher_worker, args=(account_name,), daemon=True
+  )
+  t.start()
+  return True
+
 
 def stop_account_auto_publish(account_name):
-    with status_lock:
-        account_running_status[account_name] = False
-    return True
+  with status_lock:
+    account_running_status[account_name] = False
+  return True
+
 
 # ======================== 网页模板 ========================
 UI_TEMPLATE = """
@@ -415,7 +487,7 @@ UI_TEMPLATE = """
                 <div class="log-box" id="manual_log">等待操作...</div>
             </div>
 
-            <!-- 3. 独立文章发布模式（新增） -->
+            <!-- 3. 独立文章发布模式 -->
             <div id="article" class="tab-content">
                 <div class="form-group">
                     <label class="form-label">选择发布账号</label>
@@ -437,27 +509,32 @@ UI_TEMPLATE = """
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">常用表情 (点击插入正文)</label>
-                    <div class="emoji-bar">
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🔥')">🔥</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🚀')">🚀</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📈')">📈</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📉')">📉</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('⚠️')">⚠️</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💰')">💰</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📊')">📊</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💎')">💎</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🐂')">🐂</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🐻')">🐻</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🚨')">🚨</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🎯')">🎯</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('👀')">👀</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('👇')">👇</button>
-                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💡')">💡</button>
+                    <label class="form-label">正文工具栏</label>
+                    <div class="emoji-bar" style="display:flex; align-items:center; justify-content:space-between;">
+                        <div>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🔥')">🔥</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🚀')">🚀</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📈')">📈</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📉')">📉</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('⚠️')">⚠️</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💰')">💰</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📊')">📊</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💎')">💎</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🐂')">🐂</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🐻')">🐻</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🚨')">🚨</button>
+                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🎯')">🎯</button>
+                        </div>
+                        <div>
+                            <input type="file" id="inline_img_picker" accept="image/*" style="display:none;" onchange="handleInlineImageUpload(event)">
+                            <button type="button" class="btn btn-secondary" style="padding:6px 12px; font-size:13px;" onclick="document.getElementById('inline_img_picker').click()">
+                                <i class="fa fa-picture-o"></i> 插入正文配图
+                            </button>
+                        </div>
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">文章正文（支持多段落、换行与表情符）</label>
+                    <label class="form-label">文章正文（支持多段落、换行、配图与表情符）</label>
                     <textarea id="article_content" class="form-control" style="min-height:220px;" placeholder="在此输入深度行情剖析、策略观点或资讯长文..."></textarea>
                 </div>
                 <button class="btn btn-primary" onclick="submitArticlePost()" style="width:100%" id="article_submit_btn">
@@ -761,6 +838,47 @@ UI_TEMPLATE = """
             }
         }
 
+        function handleInlineImageUpload(event) {
+            const file = event.target.files[0];
+            const accountKey = document.getElementById('article_account').value;
+            const logBox = document.getElementById('article_log');
+
+            if (!file) return;
+            if (!accountKey) {
+                alert('请先在上方选择发布账号！');
+                return;
+            }
+
+            logBox.textContent = '⏳ 正在上传正文配图到币安服务器...';
+
+            const formData = new FormData();
+            formData.append('account_key', accountKey);
+            formData.append('inline_image', file);
+
+            fetch('/api/article/upload_inline_image', {
+                method: 'POST',
+                body: formData
+            }).then(r => r.json()).then(d => {
+                if (d.success) {
+                    logBox.textContent = '✅ 正文配图上传成功，已插入光标位置！';
+                    const markdownImg = `\\n\\n![行情分析图](${d.url})\\n\\n`;
+                    const textarea = document.getElementById('article_content');
+                    const start = textarea.selectionStart;
+                    const end = textarea.selectionEnd;
+                    const text = textarea.value;
+                    textarea.value = text.substring(0, start) + markdownImg + text.substring(end);
+                    textarea.focus();
+                    textarea.selectionStart = textarea.selectionEnd = start + markdownImg.length;
+                } else {
+                    logBox.textContent = `❌ 插图上传失败: ${d.msg}`;
+                }
+                event.target.value = '';
+            }).catch(err => {
+                logBox.textContent = `❌ 插图上传异常: ${err}`;
+                event.target.value = '';
+            });
+        }
+
         function submitArticlePost() {
             const k = document.getElementById('article_account').value;
             const title = document.getElementById('article_title').value.trim();
@@ -848,189 +966,259 @@ UI_TEMPLATE = """
 </html>
 """
 
+
 # ======================== 路由接口 ========================
-@app.route('/')
+@app.route("/")
 def index():
-    accounts = get_all_accounts()
-    today_stats = get_today_stats()
-    today = str(datetime.date.today())
-    return render_template_string(UI_TEMPLATE, accounts=accounts, today_stats=today_stats, today=today)
+  accounts = get_all_accounts()
+  today_stats = get_today_stats()
+  today = str(datetime.date.today())
+  return render_template_string(
+      UI_TEMPLATE, accounts=accounts, today_stats=today_stats, today=today
+  )
 
-@app.route('/api/auto/start')
+
+@app.route("/api/auto/start")
 def auto_start():
-    a = request.args.get('account')
-    ok = start_account_auto_publish(a)
-    return jsonify({'success': ok, 'msg': '已启动' if ok else '已运行'})
+  a = request.args.get("account")
+  ok = start_account_auto_publish(a)
+  return jsonify({"success": ok, "msg": "已启动" if ok else "已运行"})
 
-@app.route('/api/auto/stop')
+
+@app.route("/api/auto/stop")
 def auto_stop():
-    a = request.args.get('account')
-    stop_account_auto_publish(a)
-    return jsonify({'success': True, 'msg': '已停止'})
+  a = request.args.get("account")
+  stop_account_auto_publish(a)
+  return jsonify({"success": True, "msg": "已停止"})
 
-@app.route('/api/auto/status')
+
+@app.route("/api/auto/status")
 def auto_status():
-    a = request.args.get('account')
-    acc = get_account_by_name(a) or {}
-    return jsonify({
-        'running': account_running_status.get(a, False),
-        'daily_limit': acc.get('daily_limit', DEFAULT_DAILY_LIMIT),
-        'auto_interval': acc.get('auto_interval', DEFAULT_AUTO_INTERVAL)
-    })
+  a = request.args.get("account")
+  acc = get_account_by_name(a) or {}
+  return jsonify({
+      "running": account_running_status.get(a, False),
+      "daily_limit": acc.get("daily_limit", DEFAULT_DAILY_LIMIT),
+      "auto_interval": acc.get("auto_interval", DEFAULT_AUTO_INTERVAL),
+  })
 
-@app.route('/api/auto/refresh')
+
+@app.route("/api/auto/refresh")
 def auto_refresh():
-    return jsonify({
-        'accounts': get_all_accounts(),
-        'today_stats': get_today_stats()
-    })
+  return jsonify(
+      {"accounts": get_all_accounts(), "today_stats": get_today_stats()}
+  )
 
-@app.route('/api/config/load')
+
+@app.route("/api/config/load")
 def config_load():
-    a = request.args.get('account')
-    acc = get_account_by_name(a) or {}
-    return jsonify({
-        'prompt': acc.get('prompt', ''),
-        'model_type': acc.get('model_type', 'zhipu'),
-        'daily_limit': acc.get('daily_limit', DEFAULT_DAILY_LIMIT),
-        'auto_interval': acc.get('auto_interval', DEFAULT_AUTO_INTERVAL),
-        'schedule': acc.get('schedule', {})
-    })
+  a = request.args.get("account")
+  acc = get_account_by_name(a) or {}
+  return jsonify({
+      "prompt": acc.get("prompt", ""),
+      "model_type": acc.get("model_type", "zhipu"),
+      "daily_limit": acc.get("daily_limit", DEFAULT_DAILY_LIMIT),
+      "auto_interval": acc.get("auto_interval", DEFAULT_AUTO_INTERVAL),
+      "schedule": acc.get("schedule", {}),
+  })
 
-@app.route('/api/config/save', methods=['POST'])
+
+@app.route("/api/config/save", methods=["POST"])
 def config_save():
-    d = request.json
-    save_account_prompt(d['account'], d['prompt'], d['daily_limit'], d['auto_interval'], d['model_type'], d.get('schedule'))
-    return jsonify({'success': True})
+  d = request.json
+  save_account_prompt(
+      d["account"],
+      d["prompt"],
+      d["daily_limit"],
+      d["auto_interval"],
+      d["model_type"],
+      d.get("schedule"),
+  )
+  return jsonify({"success": True})
 
-@app.route('/api/manual/auto_symbol')
+
+@app.route("/api/manual/auto_symbol")
 def manual_auto_symbol():
-    try:
-        from topic_main import run_topic
-        topic = run_topic()
-        symbol = topic.get("symbol", "BTCUSDT")
-        return jsonify({'success': True, 'symbol': symbol})
-    except:
-        return jsonify({'success': True, 'symbol': "BTCUSDT"})
-
-@app.route('/api/manual/full_topic')
-def manual_full_topic():
-    symbol = request.args.get('symbol', '').strip()
+  try:
     from topic_main import run_topic
-    topic = run_topic(target_symbol=symbol, verbose=True)
-    return jsonify({'success': True, 'topic': topic.get('text', '')})
 
-@app.route('/api/manual/generate_ai', methods=['POST'])
+    topic = run_topic()
+    symbol = topic.get("symbol", "BTCUSDT")
+    return jsonify({"success": True, "symbol": symbol})
+  except:
+    return jsonify({"success": True, "symbol": "BTCUSDT"})
+
+
+@app.route("/api/manual/full_topic")
+def manual_full_topic():
+  symbol = request.args.get("symbol", "").strip()
+  from topic_main import run_topic
+
+  topic = run_topic(target_symbol=symbol, verbose=True)
+  return jsonify({"success": True, "topic": topic.get("text", "")})
+
+
+@app.route("/api/manual/generate_ai", methods=["POST"])
 def manual_generate_ai():
-    d = request.json
-    t = d['topic']
-    k = d['account_key']
-    acc = get_account_by_key(k)
-    from ai_core import generate_content
-    api_key = ZHIPU_API_KEY if acc.get('model_type') == 'zhipu' else DEEPSEEK_API_KEY
-    c, _ = generate_content({'text': t}, api_key=api_key, model_type=acc.get('model_type', 'zhipu'), custom_prompt=acc.get('prompt', ''))
-    return c or ''
+  d = request.json
+  t = d["topic"]
+  k = d["account_key"]
+  acc = get_account_by_key(k)
+  from ai_core import generate_content
 
-@app.route('/api/manual/post', methods=['POST'])
+  api_key = (
+      ZHIPU_API_KEY if acc.get("model_type") == "zhipu" else DEEPSEEK_API_KEY
+  )
+  c, _ = generate_content(
+      {"text": t},
+      api_key=api_key,
+      model_type=acc.get("model_type", "zhipu"),
+      custom_prompt=acc.get("prompt", ""),
+  )
+  return c or ""
+
+
+@app.route("/api/manual/post", methods=["POST"])
 def manual_post():
-    d = request.json
-    k = d['account_key']
-    c = d['content']
-    s = d['symbol']
-    acc = get_account_by_key(k)
-    from post_main import post_content
-    ok, msg, pid = post_content(c, k)
-    pid = str(pid) if pid else '未知'
-    if ok:
-        save_post_record('manual', acc['name'], s, c, pid)
-        inc_manual_published(acc['name'])
-        cfg = load_json(CONFIG_FILE)
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cfg[f"{acc['name']}_last_run"] = now_str
-        cfg[f"{acc['name']}_last_manual_run"] = now_str
-        save_json(CONFIG_FILE, cfg)
-    return jsonify({'success': ok, 'post_id': pid, 'msg': msg})
+  d = request.json
+  k = d["account_key"]
+  c = d["content"]
+  s = d["symbol"]
+  acc = get_account_by_key(k)
+  from post_main import post_content
 
-# ======================== 新增：长文发布接口 ========================
-@app.route('/api/article/post', methods=['POST'])
+  ok, msg, pid = post_content(c, k)
+  pid = str(pid) if pid else "未知"
+  if ok:
+    save_post_record("manual", acc["name"], s, c, pid)
+    inc_manual_published(acc["name"])
+    cfg = load_json(CONFIG_FILE)
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cfg[f"{acc['name']}_last_run"] = now_str
+    cfg[f"{acc['name']}_last_manual_run"] = now_str
+    save_json(CONFIG_FILE, cfg)
+  return jsonify({"success": ok, "post_id": pid, "msg": msg})
+
+
+# ======================== 长文与插图接口 ========================
+@app.route("/api/article/upload_inline_image", methods=["POST"])
+def upload_inline_image():
+  account_key = request.form.get("account_key", "").strip()
+  image_file = request.files.get("inline_image")
+
+  if not account_key:
+    return jsonify({"success": False, "msg": "请先选择发布账号"})
+  if not image_file or not image_file.filename:
+    return jsonify({"success": False, "msg": "未选择图片文件"})
+
+  from post_main import upload_image
+
+  ok, img_url, msg = upload_image(image_file, account_key)
+  if ok:
+    return jsonify({"success": True, "url": img_url})
+  return jsonify({"success": False, "msg": msg})
+
+
+@app.route("/api/article/post", methods=["POST"])
 def article_post():
-    account_key = request.form.get('account_key', '').strip()
-    title = request.form.get('title', '').strip()
-    content = request.form.get('content', '').strip()
-    cover_file = request.files.get('cover_image')
+  account_key = request.form.get("account_key", "").strip()
+  title = request.form.get("title", "").strip()
+  content = request.form.get("content", "").strip()
+  cover_file = request.files.get("cover_image")
 
-    if not account_key:
-        return jsonify({'success': False, 'msg': '请选择发布账号'})
-    if not title:
-        return jsonify({'success': False, 'msg': '文章标题不能为空'})
-    if not content:
-        return jsonify({'success': False, 'msg': '文章正文不能为空'})
+  if not account_key:
+    return jsonify({"success": False, "msg": "请选择发布账号"})
+  if not title:
+    return jsonify({"success": False, "msg": "文章标题不能为空"})
+  if not content:
+    return jsonify({"success": False, "msg": "文章正文不能为空"})
 
-    acc = get_account_by_key(account_key)
-    if not acc:
-        return jsonify({'success': False, 'msg': '指定账号不存在'})
+  acc = get_account_by_key(account_key)
+  if not acc:
+    return jsonify({"success": False, "msg": "指定账号不存在"})
 
-    from post_main import upload_image, post_article
-    cover_url = ""
-    if cover_file and cover_file.filename:
-        ok_upload, url, err_msg = upload_image(cover_file, account_key)
-        if not ok_upload:
-            return jsonify({'success': False, 'msg': f'封面图片上传失败: {err_msg}'})
-        cover_url = url
+  from post_main import post_article, upload_image
 
-    ok, msg, pid = post_article(title, content, cover_url, account_key)
-    pid = str(pid) if pid else '未知'
-    if ok:
-        save_post_record('article', acc['name'], title[:20], content, pid)
-        inc_manual_published(acc['name'])
-        cfg = load_json(CONFIG_FILE)
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cfg[f"{acc['name']}_last_run"] = now_str
-        cfg[f"{acc['name']}_last_article_run"] = now_str
-        save_json(CONFIG_FILE, cfg)
+  cover_url = ""
+  if cover_file and cover_file.filename:
+    ok_upload, url, err_msg = upload_image(cover_file, account_key)
+    if not ok_upload:
+      return jsonify({"success": False, "msg": f"封面图片上传失败: {err_msg}"})
+    cover_url = url
 
-    return jsonify({'success': ok, 'post_id': pid, 'msg': msg})
+  ok, msg, pid = post_article(title, content, cover_url, account_key)
+  pid = str(pid) if pid else "未知"
+  if ok:
+    save_post_record("article", acc["name"], title[:20], content, pid)
+    inc_manual_published(acc["name"])
+    cfg = load_json(CONFIG_FILE)
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cfg[f"{acc['name']}_last_run"] = now_str
+    cfg[f"{acc['name']}_last_article_run"] = now_str
+    save_json(CONFIG_FILE, cfg)
 
-@app.route('/api/records')
+  return jsonify({"success": ok, "post_id": pid, "msg": msg})
+
+
+@app.route("/api/records")
 def records():
-    a = request.args.get('account')
-    d = request.args.get('date')
-    db = load_json(DB_FILE, [])
-    res = []
-    for r in db:
-        if a and r['account'] != a: continue
-        if d and r['date'] != d: continue
-        res.append(r)
-    return jsonify(res)
+  a = request.args.get("account")
+  d = request.args.get("date")
+  db = load_json(DB_FILE, [])
+  res = []
+  for r in db:
+    if a and r["account"] != a:
+      continue
+    if d and r["date"] != d:
+      continue
+    res.append(r)
+  return jsonify(res)
 
-@app.route('/api/records/export')
+
+@app.route("/api/records/export")
 def records_export():
-    a = request.args.get('account')
-    d = request.args.get('date')
-    db = load_json(DB_FILE, [])
-    res = []
-    for r in db:
-        if a and r['account'] != a: continue
-        if d and r['date'] != d: continue
-        res.append(r)
-    def csv_escape(s):
-        return s.replace('"', '""') if isinstance(s, str) else s
-    csv = '模式,账号,日期,时间,标题/币种,ID,状态,内容\n'
-    for r in res:
-        csv += f"{csv_escape(r['mode'])},{csv_escape(r['account'])},{csv_escape(r['date'])},{csv_escape(r['time'])},{csv_escape(r['symbol'])},{csv_escape(r['post_id'])},{csv_escape(r['status'])},\"{csv_escape(r['content'])}\"\n"
-    response = make_response(csv)
-    response.headers["Content-Type"] = "text/csv;charset=utf-8"
-    response.headers["Content-Disposition"] = "attachment;filename=records.csv"
-    return response
+  a = request.args.get("account")
+  d = request.args.get("date")
+  db = load_json(DB_FILE, [])
+  res = []
+  for r in db:
+    if a and r["account"] != a:
+      continue
+    if d and r["date"] != d:
+      continue
+    res.append(r)
 
-@app.route('/api/records/delete', methods=['POST'])
+  def csv_escape(s):
+    return s.replace('"', '""') if isinstance(s, str) else s
+
+  csv = "模式,账号,日期,时间,标题/币种,ID,状态,内容\n"
+  for r in res:
+    csv += (
+        f"{csv_escape(r['mode'])},{csv_escape(r['account'])},{csv_escape(r['date'])},{csv_escape(r['time'])},{csv_escape(r['symbol'])},{csv_escape(r['post_id'])},{csv_escape(r['status'])},\"{csv_escape(r['content'])}\"\n"
+    )
+  response = make_response(csv)
+  response.headers["Content-Type"] = "text/csv;charset=utf-8"
+  response.headers["Content-Disposition"] = "attachment;filename=records.csv"
+  return response
+
+
+@app.route("/api/records/delete", methods=["POST"])
 def records_delete():
-    a = request.args.get('account')
-    d = request.args.get('date')
-    all_records = request.args.get('all') == 'true'
-    cnt = delete_records(a, d, all_records)
-    return jsonify({'success': True, 'deleted_count': cnt})
+  a = request.args.get("account")
+  d = request.args.get("date")
+  all_records = request.args.get("all") == "true"
+  cnt = delete_records(a, d, all_records)
+  return jsonify({"success": True, "deleted_count": cnt})
 
-if __name__ == '__main__':
-    recover_counts_from_records()
-    app.run(host='0.0.0.0', port=5000, debug=False)
+
+# ======================== 全局异常拦截处理 ========================
+@app.errorhandler(Exception)
+def handle_global_exception(e):
+  print("❌ [服务端未捕获异常]:", e)
+  traceback.print_exc()
+  return jsonify({"success": False, "msg": f"服务端发生异常: {str(e)}"}), 500
+
+
+if __name__ == "__main__":
+  recover_counts_from_records()
+  app.run(host="0.0.0.0", port=5000, debug=False)
