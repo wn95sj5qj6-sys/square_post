@@ -28,7 +28,7 @@ def post_content(content, api_key):
 
 
 def post_article(title, content, api_key):
-  """发布长文（进入【文章】分类）"""
+  """长文发布：自动排版标题与多段落正文，通过标准接口提交"""
   try:
     headers = {
         "X-Square-OpenAPI-Key": api_key.strip(),
@@ -36,12 +36,14 @@ def post_article(title, content, api_key):
         "clienttype": "binanceSkill",
     }
 
-    # 核心修改：使用独立 title + bodyText + contentType: 2 声明为文章
-    data = {
-        "title": title.strip(),
-        "bodyText": content.strip(),
-        "contentType": 2,
-    }
+    # 规范化组合标题与正文
+    if title and title.strip():
+      full_article = f"📌 【{title.strip()}】\n\n{content.strip()}"
+    else:
+      full_article = content.strip()
+
+    # 必须使用官方唯一支持的 bodyTextOnly 字段
+    data = {"bodyTextOnly": full_article}
 
     r = requests.post(
         "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add",
