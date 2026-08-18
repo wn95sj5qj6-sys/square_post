@@ -826,7 +826,15 @@ UI_TEMPLATE = """
             const file = event.target.files[0];
             const previewBox = document.getElementById('cover_preview_box');
             const previewImg = document.getElementById('cover_preview_img');
+            
             if (file) {
+                // 限制封面大小不超过 5MB
+                if (file.size > 5 * 1024 * 1024) {
+                    alert('⚠️ 封面图片过大（超过 5MB），请压缩或选择更小的图片！');
+                    event.target.value = '';
+                    previewBox.style.display = 'none';
+                    return;
+                }
                 const reader = new FileReader();
                 reader.onload = function(e) {
                     previewImg.src = e.target.result;
