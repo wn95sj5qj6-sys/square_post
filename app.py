@@ -6,9 +6,7 @@ import threading
 import time
 import urllib.parse
 
-# ===================== 【关键：导入调度模块】 =====================
 from schedule_core import can_publish, get_random_interval, inc_auto_published, inc_manual_published, get_daily_stats, set_daily_stats
-# ==================================================================
 
 app = Flask(__name__)
 
@@ -16,9 +14,8 @@ app = Flask(__name__)
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEFAULT_AUTO_INTERVAL = int(os.getenv("AUTO_INTERVAL_MINUTES", "60"))
-DEFAULT_DAILY_LIMIT = int(os.getenv("DAILY_MAX_LIMIT", "8"))  # 保留但不再用于手动限制
+DEFAULT_DAILY_LIMIT = int(os.getenv("DAILY_MAX_LIMIT", "8"))
 
-# 数据存储路径
 DATA_DIR = "data"
 DB_FILE = f"{DATA_DIR}/records.json"
 CONFIG_FILE = f"{DATA_DIR}/config.json"
@@ -26,11 +23,9 @@ PROMPT_FILE = f"{DATA_DIR}/prompts.json"
 GLOBAL_CONFIG_FILE = f"{DATA_DIR}/global_config.json"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 多账号运行状态存储（内存中，key: 账号名，value: 是否运行）
 account_running_status = {}
 status_lock = threading.Lock()
 
-# ======================== 全局配置管理 ========================
 def load_global_config():
     return load_json(GLOBAL_CONFIG_FILE, {"manual_verbose_mode": False})
 
@@ -46,7 +41,6 @@ def set_manual_verbose_mode(enabled):
     cfg["manual_verbose_mode"] = enabled
     save_global_config(cfg)
 
-# ======================== 工具函数 ========================
 def load_json(file_path, default=None):
     if default is None:
         default = {}
@@ -60,12 +54,9 @@ def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ======================== 启动时恢复计数（从 records.json） ========================
 def recover_counts_from_records():
-    """服务启动时，从今天的成功发文记录中恢复 auto_published 和 manual_published"""
     today = str(datetime.date.today())
     db = load_json(DB_FILE, [])
-    # 按账号统计
     auto_counts = {}
     manual_counts = {}
     for record in db:
@@ -76,9 +67,8 @@ def recover_counts_from_records():
                 continue
             if mode == "auto":
                 auto_counts[acc] = auto_counts.get(acc, 0) + 1
-            elif mode == "manual":
+            elif mode in ["manual", "article"]:
                 manual_counts[acc] = manual_counts.get(acc, 0) + 1
-    # 应用到 schedule_core
     accounts = get_all_accounts()
     for acc in accounts:
         acc_name = acc["name"]
@@ -87,7 +77,6 @@ def recover_counts_from_records():
         set_daily_stats(acc_name, acc, auto_published=auto_pub, manual_published=manual_pub)
     print(f"[启动恢复] 已恢复今日发文计数: auto={auto_counts}, manual={manual_counts}")
 
-# ======================== 账号管理 ========================
 def get_accounts_from_env():
     accounts_env = os.getenv("BINANCE_ACCOUNTS", "").strip()
     accounts = []
@@ -108,7 +97,6 @@ def get_accounts_from_env():
 def get_all_accounts():
     env_accounts = get_accounts_from_env()
     prompts = load_json(PROMPT_FILE)
-    
     accounts = []
     for acc in env_accounts:
         acc_name = acc["name"]
@@ -121,7 +109,7 @@ def get_all_accounts():
             "key": acc["key"],
             "prompt": acc_config.get("prompt", ""),
             "model_type": acc_config.get("model_type", "zhipu"),
-            "daily_limit": acc_config.get("daily_limit", DEFAULT_DAILY_LIMIT),  # 保留但前端不再用作手动限制
+            "daily_limit": acc_config.get("daily_limit", DEFAULT_DAILY_LIMIT),
             "auto_interval": acc_config.get("auto_interval", DEFAULT_AUTO_INTERVAL),
             "schedule": acc_config.get("schedule", {}),
             "running": running
@@ -129,15 +117,13 @@ def get_all_accounts():
     return accounts
 
 def get_account_by_name(name):
-    accounts = get_all_accounts()
-    for acc in accounts:
+    for acc in get_all_accounts():
         if acc["name"] == name:
             return acc
     return None
 
 def get_account_by_key(key):
-    accounts = get_all_accounts()
-    for acc in accounts:
+    for acc in get_all_accounts():
         if acc["key"] == key:
             return acc
     return None
@@ -155,7 +141,6 @@ def save_account_prompt(account_name, prompt, daily_limit, auto_interval, model_
     prompts[account_name] = data
     save_json(PROMPT_FILE, prompts)
 
-# ======================== 发文记录管理 ========================
 def save_post_record(mode, account_name, symbol, content, post_id, status="success"):
     record = {
         "mode": mode,
@@ -175,7 +160,6 @@ def save_post_record(mode, account_name, symbol, content, post_id, status="succe
     save_json(DB_FILE, db)
 
 def get_today_stats(account_name=None):
-    """从 schedule_core 获取今日统计，不再依赖 records.json"""
     accounts = get_all_accounts()
     stats = {}
     for acc in accounts:
@@ -188,9 +172,7 @@ def get_today_stats(account_name=None):
             "running": acc["running"]
         }
     if account_name:
-        return stats.get(account_name, {
-            "auto_target": 0, "auto_count": 0, "manual_count": 0, "running": False
-        })
+        return stats.get(account_name, {"auto_target": 0, "auto_count": 0, "manual_count": 0, "running": False})
     return stats
 
 def delete_records(account=None, date=None, all_records=False):
@@ -211,24 +193,19 @@ def delete_records(account=None, date=None, all_records=False):
     save_json(DB_FILE, new_db)
     return len(db) - len(new_db)
 
-# ======================== 自动发文核心 ========================
 def auto_publisher_worker(account_name):
     while True:
         with status_lock:
             if not account_running_status.get(account_name, False):
                 break
         current_acc = get_account_by_name(account_name)
-        if not current_acc:
-            time.sleep(10)
-            continue
-
-        if not can_publish(account_name, current_acc):
-            time.sleep(60)
+        if not current_acc or not can_publish(account_name, current_acc):
+            time.sleep(30)
             continue
 
         try:
             from topic_main import run_topic
-            topic = run_topic()  # 自动模式使用精简版（verbose=False）
+            topic = run_topic()
             if not topic:
                 time.sleep(10)
                 continue
@@ -248,8 +225,9 @@ def auto_publisher_worker(account_name):
             if ok:
                 save_post_record("auto", account_name, topic.get("symbol", ""), content, post_id_str)
                 cfg = load_json(CONFIG_FILE)
-                cfg[f"{account_name}_last_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                cfg[f"{account_name}_last_auto_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                cfg[f"{account_name}_last_run"] = now_str
+                cfg[f"{account_name}_last_auto_run"] = now_str
                 save_json(CONFIG_FILE, cfg)
                 inc_auto_published(account_name)
 
@@ -267,7 +245,6 @@ def start_account_auto_publish(account_name):
     with status_lock:
         if account_running_status.get(account_name, False):
             return False
-    with status_lock:
         account_running_status[account_name] = True
     t = threading.Thread(target=auto_publisher_worker, args=(account_name,), daemon=True)
     t.start()
@@ -285,7 +262,7 @@ UI_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>币安自动发文助手</title>
+    <title>币安广场内容发布系统</title>
     <style>
         :root {
             --primary: #007aff;
@@ -297,57 +274,56 @@ UI_TEMPLATE = """
             --text: #1d1d1f;
             --bg: #ffffff;
         }
-        * {
-            margin:0;padding:0;box-sizing:border-box;
-            font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-        }
-        body{background:var(--light-gray);color:var(--text);padding:16px;line-height:1.5;}
-        .container{max-width:800px;margin:0 auto;}
-        .card{background:var(--bg);border-radius:16px;box-shadow:0 2px 10px rgba(0,0,0,0.05);padding:24px;margin-bottom:16px;}
-        .header{display:flex;align-items:center;margin-bottom:20px;}
-        .header h1{font-size:22px;font-weight:600;margin-right:12px;}
-        .header .badge{background:var(--primary);color:white;font-size:12px;padding:2px 8px;border-radius:10px;}
-        .tabs{display:flex;gap:8px;margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:8px;}
-        .tab-btn{background:none;border:none;padding:8px 16px;font-size:15px;font-weight:500;color:var(--gray);border-radius:8px;cursor:pointer;transition:all 0.2s;}
-        .tab-btn.active{color:var(--primary);background:rgba(0,122,255,0.1);}
-        .tab-content{display:none;}
-        .tab-content.active{display:block;}
-        .form-group{margin-bottom:16px;}
-        .form-label{display:block;font-size:14px;font-weight:500;margin-bottom:8px;color:var(--text);}
-        .form-control{width:100%;padding:12px 16px;border:1px solid var(--border);border-radius:12px;font-size:15px;transition:border 0.2s;}
-        .form-control:focus{outline:none;border-color:var(--primary);}
-        textarea.form-control{min-height:120px;resize:vertical;line-height:1.5;}
-        .btn{display:inline-flex;align-items:center;justify-content:center;padding:12px 24px;border:none;border-radius:12px;font-size:15px;font-weight:500;cursor:pointer;transition:all 0.2s;gap:8px;}
-        .btn-primary{background:var(--primary);color:white;}
-        .btn-primary:hover{background:#0066cc;}
-        .btn-success{background:var(--success);color:white;}
-        .btn-danger{background:var(--danger);color:white;}
-        .btn-secondary{background:var(--light-gray);color:var(--text);}
-        .btn-secondary:hover{background:#e5e5ea;}
-        .account-selector{width:100%;margin-bottom:16px;}
-        .account-actions-wrapper{display:flex;gap:8px;margin-top:8px;}
-        .account-action-btn{flex:1;padding:8px 12px;font-size:14px;}
-        .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px;}
-        .stat-card{background:var(--light-gray);border-radius:12px;padding:16px;text-align:center;cursor:pointer;transition:all 0.2s;}
-        .stat-card:hover{transform:scale(1.02);box-shadow:0 2px 8px rgba(0,0,0,0.1);}
-        .stat-card.active{border:2px solid var(--primary);background:rgba(0,122,255,0.05);}
-        .stat-value{font-size:24px;font-weight:600;margin-bottom:4px;}
-        .stat-label{font-size:12px;color:var(--gray);}
-        .config-detail{background:rgba(0,122,255,0.05);border-left:4px solid var(--primary);padding:16px;border-radius:0 12px 12px 0;margin-bottom:16px;display:none;}
-        .config-detail.active{display:block;}
-        .log-box{background:var(--light-gray);border-radius:12px;padding:16px;min-height:80px;font-size:14px;white-space:pre-wrap;margin-top:16px;}
-        .records-list{max-height:400px;overflow-y:auto;gap:12px;display:flex;flex-direction:column;}
-        .record-item{background:var(--light-gray);border-radius:12px;padding:16px;}
-        .record-header{display:flex;justify-content:space-between;margin-bottom:8px;font-size:14px;}
-        .record-symbol{font-weight:600;color:var(--primary);}
-        .record-time{color:var(--gray);font-size:12px;}
-        .record-content{font-size:14px;line-height:1.5;}
-        .delete-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--border);}
-        .grid-row{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:12px;}
-        @media(max-width:480px){.card{padding:16px;}.account-actions-wrapper{flex-direction:column;}.grid-row{grid-template-columns:1fr;}}
-        .button-group { display: flex; gap: 12px; margin-bottom: 16px; }
-        .button-group .btn { flex: 1; }
-        .verbose-checkbox { display: inline-flex; align-items: center; gap: 6px; margin-left: 16px; font-size: 13px; color: var(--gray); }
+        * { margin:0; padding:0; box-sizing:border-box; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+        body { background:var(--light-gray); color:var(--text); padding:16px; line-height:1.5; }
+        .container { max-width:850px; margin:0 auto; }
+        .card { background:var(--bg); border-radius:16px; box-shadow:0 2px 10px rgba(0,0,0,0.05); padding:24px; margin-bottom:16px; }
+        .header { display:flex; align-items:center; margin-bottom:20px; }
+        .header h1 { font-size:22px; font-weight:600; margin-right:12px; }
+        .header .badge { background:var(--primary); color:white; font-size:12px; padding:2px 8px; border-radius:10px; }
+        .tabs { display:flex; gap:8px; margin-bottom:20px; border-bottom:1px solid var(--border); padding-bottom:8px; overflow-x:auto; }
+        .tab-btn { background:none; border:none; padding:8px 16px; font-size:15px; font-weight:500; color:var(--gray); border-radius:8px; cursor:pointer; transition:all 0.2s; white-space:nowrap; }
+        .tab-btn.active { color:var(--primary); background:rgba(0,122,255,0.1); }
+        .tab-content { display:none; }
+        .tab-content.active { display:block; }
+        .form-group { margin-bottom:16px; }
+        .form-label { display:block; font-size:14px; font-weight:500; margin-bottom:8px; color:var(--text); }
+        .form-control { width:100%; padding:12px 16px; border:1px solid var(--border); border-radius:12px; font-size:15px; transition:border 0.2s; }
+        .form-control:focus { outline:none; border-color:var(--primary); }
+        textarea.form-control { min-height:120px; resize:vertical; line-height:1.5; }
+        .btn { display:inline-flex; align-items:center; justify-content:center; padding:12px 24px; border:none; border-radius:12px; font-size:15px; font-weight:500; cursor:pointer; transition:all 0.2s; gap:8px; }
+        .btn-primary { background:var(--primary); color:white; }
+        .btn-primary:hover { background:#0066cc; }
+        .btn-success { background:var(--success); color:white; }
+        .btn-danger { background:var(--danger); color:white; }
+        .btn-secondary { background:var(--light-gray); color:var(--text); }
+        .btn-secondary:hover { background:#e5e5ea; }
+        .account-selector { width:100%; margin-bottom:16px; }
+        .account-actions-wrapper { display:flex; gap:8px; margin-top:8px; }
+        .account-action-btn { flex:1; padding:8px 12px; font-size:14px; }
+        .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:20px; }
+        .stat-card { background:var(--light-gray); border-radius:12px; padding:16px; text-align:center; cursor:pointer; transition:all 0.2s; }
+        .stat-card:hover { transform:scale(1.02); box-shadow:0 2px 8px rgba(0,0,0,0.1); }
+        .stat-card.active { border:2px solid var(--primary); background:rgba(0,122,255,0.05); }
+        .stat-value { font-size:24px; font-weight:600; margin-bottom:4px; }
+        .stat-label { font-size:12px; color:var(--gray); }
+        .config-detail { background:rgba(0,122,255,0.05); border-left:4px solid var(--primary); padding:16px; border-radius:0 12px 12px 0; margin-bottom:16px; display:none; }
+        .config-detail.active { display:block; }
+        .log-box { background:var(--light-gray); border-radius:12px; padding:16px; min-height:60px; font-size:14px; white-space:pre-wrap; margin-top:16px; }
+        .records-list { max-height:400px; overflow-y:auto; gap:12px; display:flex; flex-direction:column; }
+        .record-item { background:var(--light-gray); border-radius:12px; padding:16px; }
+        .record-header { display:flex; justify-content:space-between; margin-bottom:8px; font-size:14px; }
+        .record-symbol { font-weight:600; color:var(--primary); }
+        .record-time { color:var(--gray); font-size:12px; }
+        .record-content { font-size:14px; line-height:1.5; }
+        .delete-section { margin-top:16px; padding-top:16px; border-top:1px solid var(--border); }
+        .grid-row { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:12px; }
+        .emoji-bar { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; padding:8px; background:var(--light-gray); border-radius:10px; }
+        .emoji-btn { background:none; border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:16px; cursor:pointer; background:white; }
+        .emoji-btn:hover { background:#f2f2f7; transform:scale(1.1); }
+        .cover-preview-wrapper { margin-top:10px; display:none; }
+        .cover-preview-img { max-height:180px; width:auto; border-radius:10px; border:1px solid var(--border); object-fit:cover; }
+        @media(max-width:480px){ .card{padding:16px;} .account-actions-wrapper{flex-direction:column;} .grid-row{grid-template-columns:1fr;} }
     </style>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
 </head>
@@ -355,16 +331,18 @@ UI_TEMPLATE = """
     <div class="container">
         <div class="card">
             <div class="header">
-                <h1>币安自动发文助手</h1>
-                <span class="badge">v2.2</span>
+                <h1>币安广场内容发布系统</h1>
+                <span class="badge">v2.3</span>
             </div>
             <div class="tabs">
                 <button class="tab-btn active" onclick="switchTab('auto')"><i class="fa fa-robot"></i> 自动模式</button>
-                <button class="tab-btn" onclick="switchTab('manual')"><i class="fa fa-hand-pointer-o"></i> 手动模式</button>
+                <button class="tab-btn" onclick="switchTab('manual')"><i class="fa fa-pencil-square-o"></i> 动态短帖</button>
+                <button class="tab-btn" onclick="switchTab('article')"><i class="fa fa-newspaper-o"></i> 广场长文</button>
                 <button class="tab-btn" onclick="switchTab('config')"><i class="fa fa-cog"></i> 账号配置</button>
                 <button class="tab-btn" onclick="switchTab('records')"><i class="fa fa-history"></i> 发文记录</button>
             </div>
-            <!-- 自动模式 -->
+
+            <!-- 1. 自动模式 -->
             <div id="auto" class="tab-content active">
                 <div class="form-label">选择要操作的账号</div>
                 <select id="auto_account_selector" class="form-control account-selector" onchange="loadAccountStatus()">
@@ -390,7 +368,7 @@ UI_TEMPLATE = """
                         <div class="stat-value">{{ stat.auto_count + stat.manual_count }}</div>
                         <div class="stat-label">{{acc_name}}</div>
                         <div class="stat-label">自动: {{stat.auto_count}}/{{stat.auto_target}}</div>
-                        <div class="stat-label">手动: {{stat.manual_count}}</div>
+                        <div class="stat-label">手动/长文: {{stat.manual_count}}</div>
                         {% if stat.running %}
                         <div class="stat-label" style="color:var(--success);">运行中</div>
                         {% else %}
@@ -403,13 +381,14 @@ UI_TEMPLATE = """
                     <div id="config_detail_content"></div>
                 </div>
             </div>
-            <!-- 手动模式 -->
+
+            <!-- 2. 短动态模式 -->
             <div id="manual" class="tab-content">
                 <div class="form-group">
                     <label class="form-label">选择发文账号</label>
                     <select id="manual_account" class="form-control">
                         {% for acc in accounts %}
-                        <option value="{{acc.key}}" data-name="{{acc.name}}">{{acc.name}} (手动已发:{{today_stats[acc.name].manual_count}})</option>
+                        <option value="{{acc.key}}" data-name="{{acc.name}}">{{acc.name}}</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -419,28 +398,75 @@ UI_TEMPLATE = """
                 </div>
                 <div style="display:flex;gap:8px;margin-bottom:16px; flex-wrap: wrap; align-items: center;">
                     <button class="btn btn-secondary" onclick="autoSelectSymbol()">自动选交易对</button>
-                    <button class="btn btn-secondary" onclick="generateFullTopic()">生成完整分析</button>
-                    <label class="verbose-checkbox">
-                        <input type="checkbox" id="verbose_mode_checkbox" onchange="toggleVerboseMode()"> 
-                        <span>详细模式（输出完整分析，消耗更多token）</span>
-                    </label>
+                    <button class="btn btn-secondary" onclick="generateFullTopic()">生成分析报告</button>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">话题分析（可编辑）</label>
-                    <textarea id="manual_topic" class="form-control" style="resize: vertical;"></textarea>
+                    <label class="form-label">话题分析</label>
+                    <textarea id="manual_topic" class="form-control"></textarea>
                 </div>
-                <div class="button-group">
-                    <button class="btn btn-secondary" onclick="copyTopicToClipboard()"><i class="fa fa-copy"></i> 复制话题分析</button>
-                    <button class="btn btn-secondary" onclick="generateAIContent()">生成发文内容</button>
+                <div style="margin-bottom:16px;">
+                    <button class="btn btn-secondary" onclick="generateAIContent()" style="width:100%;">生成发文内容</button>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">最终内容（可编辑）</label>
-                    <textarea id="manual_content" class="form-control" style="resize: vertical;"></textarea>
+                    <label class="form-label">短动态正文</label>
+                    <textarea id="manual_content" class="form-control"></textarea>
                 </div>
-                <button class="btn btn-primary" onclick="submitPost()" style="width:100%">确认发文</button>
+                <button class="btn btn-primary" onclick="submitPost()" style="width:100%">确认发布短动态</button>
                 <div class="log-box" id="manual_log">等待操作...</div>
             </div>
-            <!-- 账号配置 -->
+
+            <!-- 3. 独立文章发布模式（新增） -->
+            <div id="article" class="tab-content">
+                <div class="form-group">
+                    <label class="form-label">选择发布账号</label>
+                    <select id="article_account" class="form-control">
+                        {% for acc in accounts %}
+                        <option value="{{acc.key}}" data-name="{{acc.name}}">{{acc.name}} (今日已发:{{today_stats[acc.name].manual_count}})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">文章标题</label>
+                    <input type="text" id="article_title" class="form-control" placeholder="请输入引人注目的文章标题...">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">封面图片上传</label>
+                    <input type="file" id="article_cover_input" class="form-control" accept="image/*" onchange="handleCoverPreview(event)">
+                    <div id="cover_preview_box" class="cover-preview-wrapper">
+                        <img id="cover_preview_img" class="cover-preview-img" src="" alt="封面预览">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">常用表情 (点击插入正文)</label>
+                    <div class="emoji-bar">
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🔥')">🔥</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🚀')">🚀</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📈')">📈</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📉')">📉</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('⚠️')">⚠️</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💰')">💰</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📊')">📊</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💎')">💎</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🐂')">🐂</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🐻')">🐻</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🚨')">🚨</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🎯')">🎯</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('👀')">👀</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('👇')">👇</button>
+                        <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💡')">💡</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">文章正文（支持多段落、换行与表情符）</label>
+                    <textarea id="article_content" class="form-control" style="min-height:220px;" placeholder="在此输入深度行情剖析、策略观点或资讯长文..."></textarea>
+                </div>
+                <button class="btn btn-primary" onclick="submitArticlePost()" style="width:100%" id="article_submit_btn">
+                    <i class="fa fa-paper-plane"></i> 确认发布长文至币安广场
+                </button>
+                <div class="log-box" id="article_log">就绪，等待输入...</div>
+            </div>
+
+            <!-- 4. 账号配置 -->
             <div id="config" class="tab-content">
                 <div class="form-group">
                     <label class="form-label">选择要配置的账号</label>
@@ -461,8 +487,6 @@ UI_TEMPLATE = """
                         <option value="deepseek">DeepSeek V4-Flash</option>
                     </select>
                 </div>
-
-                <!-- 发文计划高级设置 -->
                 <div class="form-group" style="margin-top:20px;">
                     <label class="form-label">📅 发文计划设置</label>
                 </div>
@@ -496,11 +520,11 @@ UI_TEMPLATE = """
                         <input type="time" class="form-control" id="cfg_schedule_active_end" value="23:59">
                     </div>
                 </div>
-
                 <button class="btn btn-primary" onclick="saveAccountConfig()" style="width:100%;margin-top:12px;">保存配置</button>
                 <div class="log-box" id="config_log">选择账号后加载配置...</div>
             </div>
-            <!-- 发文记录 -->
+
+            <!-- 5. 发文记录 -->
             <div id="records" class="tab-content">
                 <div class="form-group">
                     <label class="form-label">筛选条件</label>
@@ -526,7 +550,7 @@ UI_TEMPLATE = """
                             <option value="{{acc.name}}">{{acc.name}}</option>
                             {% endfor %}
                         </select>
-                        <input type="date" id="delete_date" class="form-control" placeholder="选择日期">
+                        <input type="date" id="delete_date" class="form-control">
                         <button class="btn btn-danger" onclick="deleteSelectedRecords()">删除选中记录</button>
                         <button class="btn btn-danger" onclick="deleteAllRecords()">删除所有记录</button>
                     </div>
@@ -535,12 +559,15 @@ UI_TEMPLATE = """
             </div>
         </div>
     </div>
+
     <script>
         function switchTab(tabId) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            document.querySelector(`.tab-btn[onclick="switchTab('${tabId}')"]`).classList.add('active');
-            document.getElementById(tabId).classList.add('active');
+            const activeBtn = document.querySelector(`.tab-btn[onclick="switchTab('${tabId}')"]`);
+            if(activeBtn) activeBtn.classList.add('active');
+            const targetContent = document.getElementById(tabId);
+            if(targetContent) targetContent.classList.add('active');
             if(tabId === 'auto') refreshAutoPage();
             if(tabId === 'config') loadAccountConfig();
         }
@@ -561,7 +588,7 @@ UI_TEMPLATE = """
                         .then(s => {
                             const st = d.running ? `<span style="color:var(--success);">运行中</span>` : `<span style="color:var(--gray);">已停止</span>`;
                             const total = (s.auto_count||0) + (s.manual_count||0);
-                            document.getElementById('auto_account_status').innerHTML = `${st} | 今日总发文:${total} (自动:${s.auto_count}/${s.auto_target} 手动:${s.manual_count})`;
+                            document.getElementById('auto_account_status').innerHTML = `${st} | 今日总发文:${total} (自动:${s.auto_count}/${s.auto_target} 手动/长文:${s.manual_count})`;
                             document.getElementById('auto_start_btn').disabled = d.running;
                             document.getElementById('auto_stop_btn').disabled = !d.running;
                         });
@@ -570,93 +597,78 @@ UI_TEMPLATE = """
         
         function startAuto() {
             const acc = document.getElementById('auto_account_selector').value;
-            fetch(`/api/auto/start?account=${acc}`)
-                .then(r => r.json())
-                .then(d => {
-                    alert(d.msg);
-                    refreshAutoPage();
-                });
+            fetch(`/api/auto/start?account=${acc}`).then(r => r.json()).then(d => {
+                alert(d.msg);
+                refreshAutoPage();
+            });
         }
         
         function stopAuto() {
             const acc = document.getElementById('auto_account_selector').value;
-            fetch(`/api/auto/stop?account=${acc}`)
-                .then(r => r.json())
-                .then(d => {
-                    alert(d.msg);
-                    refreshAutoPage();
-                });
+            fetch(`/api/auto/stop?account=${acc}`).then(r => r.json()).then(d => {
+                alert(d.msg);
+                refreshAutoPage();
+            });
         }
         
         function showAccountConfig(acc) {
             document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('active'));
-            document.getElementById('stat_'+acc).classList.add('active');
-            fetch(`/api/config/load?account=${acc}`)
-                .then(r => r.json())
-                .then(c => {
-                    fetch(`/api/auto/last_run?account=${acc}`)
-                        .then(r => r.json())
-                        .then(l => {
-                            fetch(`/api/stats/today?account=${acc}`)
-                                .then(r => r.json())
-                                .then(s => {
-                                    let h = `<div><strong>提示词：</strong>${c.prompt||'无'}</div><div><strong>模型：</strong>${c.model_type}</div>`;
-                                    document.getElementById('config_detail_content').innerHTML = h;
-                                    document.getElementById('account_config_detail').classList.add('active');
-                                });
-                        });
-                });
+            const card = document.getElementById('stat_'+acc);
+            if(card) card.classList.add('active');
+            fetch(`/api/config/load?account=${acc}`).then(r => r.json()).then(c => {
+                let h = `<div><strong>提示词：</strong>${c.prompt||'无'}</div><div><strong>模型：</strong>${c.model_type}</div>`;
+                document.getElementById('config_detail_content').innerHTML = h;
+                document.getElementById('account_config_detail').classList.add('active');
+            });
         }
         
         function refreshAutoPage() {
-            fetch('/api/auto/refresh')
-                .then(r => r.json())
-                .then(d => {
-                    let h = '';
-                    for(const acc of d.accounts) {
-                        const s = d.today_stats[acc.name];
-                        if(!s) continue;
-                        const total = (s.auto_count||0) + (s.manual_count||0);
-                        h += `<div class="stat-card" onclick="showAccountConfig('${acc.name}')">
-                            <div class="stat-value">${total}</div>
-                            <div class="stat-label">${acc.name}</div>
-                            <div class="stat-label">自动: ${s.auto_count}/${s.auto_target}</div>
-                            <div class="stat-label">手动: ${s.manual_count}</div>
-                            ${s.running?'<div class="stat-label" style="color:var(--success);">运行中</div>':'<div class="stat-label" style="color:var(--gray);">已停止</div>'}
-                        </div>`;
-                    }
-                    document.getElementById('today_stats').innerHTML = h;
-                    // 同时更新手动模式的下拉框
-                    const manualSelect = document.getElementById('manual_account');
-                    if(manualSelect) {
-                        for(let i=0; i<manualSelect.options.length; i++) {
-                            const opt = manualSelect.options[i];
-                            const name = opt.getAttribute('data-name');
-                            if(name && d.today_stats[name]) {
-                                const st = d.today_stats[name];
-                                opt.text = `${name} (手动已发:${st.manual_count})`;
-                            }
-                        }
-                    }
-                });
+            fetch('/api/auto/refresh').then(r => r.json()).then(d => {
+                let h = '';
+                for(const acc of d.accounts) {
+                    const s = d.today_stats[acc.name];
+                    if(!s) continue;
+                    const total = (s.auto_count||0) + (s.manual_count||0);
+                    h += `<div class="stat-card" onclick="showAccountConfig('${acc.name}')">
+                        <div class="stat-value">${total}</div>
+                        <div class="stat-label">${acc.name}</div>
+                        <div class="stat-label">自动: ${s.auto_count}/${s.auto_target}</div>
+                        <div class="stat-label">手动/长文: ${s.manual_count}</div>
+                        ${s.running?'<div class="stat-label" style="color:var(--success);">运行中</div>':'<div class="stat-label" style="color:var(--gray);">已停止</div>'}
+                    </div>`;
+                }
+                document.getElementById('today_stats').innerHTML = h;
+                updateSelectOptions('manual_account', d.today_stats);
+                updateSelectOptions('article_account', d.today_stats);
+            });
+        }
+
+        function updateSelectOptions(elementId, stats) {
+            const selectEl = document.getElementById(elementId);
+            if(!selectEl) return;
+            for(let i=0; i<selectEl.options.length; i++) {
+                const opt = selectEl.options[i];
+                const name = opt.getAttribute('data-name');
+                if(name && stats[name]) {
+                    opt.text = `${name} (今日已发:${stats[name].manual_count})`;
+                }
+            }
         }
         
         function loadAccountConfig() {
             const a = document.getElementById('config_account').value;
-            fetch(`/api/config/load?account=${a}`)
-                .then(r => r.json())
-                .then(c => {
-                    document.getElementById('config_prompt').value = c.prompt || '';
-                    document.getElementById('config_model').value = c.model_type || 'zhipu';
-                    const s = c.schedule || {};
-                    document.getElementById('cfg_schedule_daily_min').value = s.daily_min || 10;
-                    document.getElementById('cfg_schedule_daily_max').value = s.daily_max || 20;
-                    document.getElementById('cfg_schedule_interval_min').value = s.interval_min || 8;
-                    document.getElementById('cfg_schedule_interval_max').value = s.interval_max || 25;
-                    document.getElementById('cfg_schedule_active_start').value = s.active_start || '08:00';
-                    document.getElementById('cfg_schedule_active_end').value = s.active_end || '22:00';
-                    document.getElementById('config_log').textContent = '已加载';
-                });
+            fetch(`/api/config/load?account=${a}`).then(r => r.json()).then(c => {
+                document.getElementById('config_prompt').value = c.prompt || '';
+                document.getElementById('config_model').value = c.model_type || 'zhipu';
+                const s = c.schedule || {};
+                document.getElementById('cfg_schedule_daily_min').value = s.daily_min || 10;
+                document.getElementById('cfg_schedule_daily_max').value = s.daily_max || 20;
+                document.getElementById('cfg_schedule_interval_min').value = s.interval_min || 8;
+                document.getElementById('cfg_schedule_interval_max').value = s.interval_max || 25;
+                document.getElementById('cfg_schedule_active_start').value = s.active_start || '08:00';
+                document.getElementById('cfg_schedule_active_end').value = s.active_end || '22:00';
+                document.getElementById('config_log').textContent = '已加载';
+            });
         }
         
         function saveAccountConfig() {
@@ -674,47 +686,24 @@ UI_TEMPLATE = """
             fetch('/api/config/save', {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({
-                    account:a, prompt:p, model_type:m,
-                    daily_limit:8, auto_interval:60, schedule:schedule
-                })
+                body: JSON.stringify({ account:a, prompt:p, model_type:m, daily_limit:8, auto_interval:60, schedule:schedule })
             }).then(r => r.json()).then(d => {
-                document.getElementById('config_log').textContent = '✅保存成功';
+                document.getElementById('config_log').textContent = '✅ 保存成功';
                 refreshAutoPage();
             });
         }
         
         function autoSelectSymbol() {
-            fetch('/api/manual/auto_symbol')
-                .then(r => r.json())
-                .then(d => {
-                    document.getElementById('manual_symbol').value = d.symbol;
-                });
+            fetch('/api/manual/auto_symbol').then(r => r.json()).then(d => {
+                document.getElementById('manual_symbol').value = d.symbol;
+            });
         }
         
         function generateFullTopic() {
             const s = document.getElementById('manual_symbol').value;
-            if(!s) {
-                alert('请先输入或自动选择交易对');
-                return;
-            }
-            fetch(`/api/manual/full_topic?symbol=${s}`)
-                .then(r => r.json())
-                .then(d => {
-                    document.getElementById('manual_topic').value = d.topic;
-                });
-        }
-        
-        function copyTopicToClipboard() {
-            const topic = document.getElementById('manual_topic').value;
-            if(!topic) {
-                alert('话题分析为空，请先生成分析');
-                return;
-            }
-            navigator.clipboard.writeText(topic).then(() => {
-                alert('话题分析已复制到剪贴板');
-            }).catch(() => {
-                alert('复制失败，请手动复制');
+            if(!s) { alert('请先输入或自动选择交易对'); return; }
+            fetch(`/api/manual/full_topic?symbol=${s}`).then(r => r.json()).then(d => {
+                document.getElementById('manual_topic').value = d.topic;
             });
         }
         
@@ -724,7 +713,7 @@ UI_TEMPLATE = """
             fetch('/api/manual/generate_ai', {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({topic:t,account_key:k})
+                body: JSON.stringify({topic:t, account_key:k})
             }).then(r => r.text()).then(c => {
                 document.getElementById('manual_content').value = c;
             });
@@ -734,32 +723,98 @@ UI_TEMPLATE = """
             const k = document.getElementById('manual_account').value;
             const c = document.getElementById('manual_content').value;
             const s = document.getElementById('manual_symbol').value;
-            if(!c.trim()) {
-                alert('发文内容不能为空');
-                return;
-            }
+            if(!c.trim()) { alert('发文内容不能为空'); return; }
             fetch('/api/manual/post', {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({account_key:k,content:c,symbol:s})
+                body: JSON.stringify({account_key:k, content:c, symbol:s})
             }).then(r => r.json()).then(d => {
-                document.getElementById('manual_log').textContent = d.success ? '✅发文成功' : '❌发文失败: '+d.msg;
+                document.getElementById('manual_log').textContent = d.success ? '✅ 发文成功' : '❌ 发文失败: '+d.msg;
                 refreshAutoPage();
+            });
+        }
+
+        // ================= 文章专属 JS 逻辑 =================
+        function insertEmojiToArticle(emoji) {
+            const textarea = document.getElementById('article_content');
+            const start = textarea.selectionStart;
+            const end = textarea.selectionEnd;
+            const text = textarea.value;
+            textarea.value = text.substring(0, start) + emoji + text.substring(end);
+            textarea.focus();
+            textarea.selectionStart = textarea.selectionEnd = start + emoji.length;
+        }
+
+        function handleCoverPreview(event) {
+            const file = event.target.files[0];
+            const previewBox = document.getElementById('cover_preview_box');
+            const previewImg = document.getElementById('cover_preview_img');
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    previewImg.src = e.target.result;
+                    previewBox.style.display = 'block';
+                }
+                reader.readAsDataURL(file);
+            } else {
+                previewBox.style.display = 'none';
+            }
+        }
+
+        function submitArticlePost() {
+            const k = document.getElementById('article_account').value;
+            const title = document.getElementById('article_title').value.trim();
+            const content = document.getElementById('article_content').value.trim();
+            const coverInput = document.getElementById('article_cover_input');
+            const logBox = document.getElementById('article_log');
+            const submitBtn = document.getElementById('article_submit_btn');
+
+            if (!title) { alert('文章标题不能为空！'); return; }
+            if (!content) { alert('文章正文不能为空！'); return; }
+
+            const formData = new FormData();
+            formData.append('account_key', k);
+            formData.append('title', title);
+            formData.append('content', content);
+            if (coverInput.files[0]) {
+                formData.append('cover_image', coverInput.files[0]);
+            }
+
+            submitBtn.disabled = true;
+            logBox.textContent = '⏳ 正在上传封面并向币安广场发布文章...';
+
+            fetch('/api/article/post', {
+                method: 'POST',
+                body: formData
+            }).then(r => r.json()).then(d => {
+                submitBtn.disabled = false;
+                if (d.success) {
+                    logBox.textContent = `✅ 文章发布成功！ID: ${d.post_id}`;
+                    document.getElementById('article_title').value = '';
+                    document.getElementById('article_content').value = '';
+                    document.getElementById('article_cover_input').value = '';
+                    document.getElementById('cover_preview_box').style.display = 'none';
+                    refreshAutoPage();
+                    loadRecords();
+                } else {
+                    logBox.textContent = `❌ 发布失败: ${d.msg}`;
+                }
+            }).catch(err => {
+                submitBtn.disabled = false;
+                logBox.textContent = `❌ 网络异常: ${err}`;
             });
         }
         
         function loadRecords() {
             const a = document.getElementById('record_account').value;
             const d = document.getElementById('record_date').value;
-            fetch(`/api/records?account=${a}&date=${d}`)
-                .then(r => r.json())
-                .then(rs => {
-                    let h = '';
-                    rs.forEach(r => {
-                        h += `<div class="record-item"><div class="record-header"><span class="record-symbol">${r.symbol}</span><span>${r.account}</span><span class="record-time">${r.time}</span></div><div class="record-content">${r.content}</div></div>`;
-                    });
-                    document.getElementById('records_list').innerHTML = h;
+            fetch(`/api/records?account=${a}&date=${d}`).then(r => r.json()).then(rs => {
+                let h = '';
+                rs.forEach(r => {
+                    h += `<div class="record-item"><div class="record-header"><span class="record-symbol">[${r.mode.toUpperCase()}] ${r.symbol}</span><span>${r.account}</span><span class="record-time">${r.time}</span></div><div class="record-content">${r.content}</div></div>`;
                 });
+                document.getElementById('records_list').innerHTML = h;
+            });
         }
         
         function exportRecords() {
@@ -771,54 +826,29 @@ UI_TEMPLATE = """
         function deleteSelectedRecords() {
             const a = document.getElementById('delete_account').value;
             const d = document.getElementById('delete_date').value;
-            fetch(`/api/records/delete?account=${encodeURIComponent(a)}&date=${encodeURIComponent(d)}`, {method:'POST'})
-                .then(r => r.json())
-                .then(d => {
-                    document.getElementById('delete_log').textContent = '已删除'+d.deleted_count+'条';
-                    loadRecords();
-                });
+            fetch(`/api/records/delete?account=${encodeURIComponent(a)}&date=${encodeURIComponent(d)}`, {method:'POST'}).then(r => r.json()).then(d => {
+                document.getElementById('delete_log').textContent = '已删除'+d.deleted_count+'条';
+                loadRecords();
+            });
         }
         
         function deleteAllRecords() {
-            fetch('/api/records/delete?all=true', {method:'POST'})
-                .then(r => r.json())
-                .then(d => {
-                    document.getElementById('delete_log').textContent = '已删除全部';
-                    loadRecords();
-                });
-        }
-        
-        function toggleVerboseMode() {
-            const enabled = document.getElementById('verbose_mode_checkbox').checked;
-            fetch('/api/config/verbose', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({verbose: enabled})
-            }).then(r => r.json()).then(d => {
-                if (!d.success) console.error('保存失败');
-            }).catch(e => console.error(e));
-        }
-        
-        function loadVerboseMode() {
-            fetch('/api/config/verbose')
-                .then(r => r.json())
-                .then(d => {
-                    document.getElementById('verbose_mode_checkbox').checked = d.verbose;
-                })
-                .catch(e => console.error(e));
+            fetch('/api/records/delete?all=true', {method:'POST'}).then(r => r.json()).then(d => {
+                document.getElementById('delete_log').textContent = '已删除全部';
+                loadRecords();
+            });
         }
         
         window.onload = function() {
             refreshAutoPage();
             loadRecords();
-            loadVerboseMode();
         };
     </script>
 </body>
 </html>
 """
 
-# ======================== 接口 ========================
+# ======================== 路由接口 ========================
 @app.route('/')
 def index():
     accounts = get_all_accounts()
@@ -855,21 +885,6 @@ def auto_refresh():
         'today_stats': get_today_stats()
     })
 
-@app.route('/api/auto/last_run')
-def auto_last_run():
-    a = request.args.get('account')
-    cfg = load_json(CONFIG_FILE)
-    return jsonify({
-        'last_run': cfg.get(f'{a}_last_run', ''),
-        'last_auto_run': cfg.get(f'{a}_last_auto_run', ''),
-        'last_manual_run': cfg.get(f'{a}_last_manual_run', '')
-    })
-
-@app.route('/api/stats/today')
-def stats_today():
-    a = request.args.get('account')
-    return jsonify(get_today_stats(a))
-
 @app.route('/api/config/load')
 def config_load():
     a = request.args.get('account')
@@ -885,21 +900,8 @@ def config_load():
 @app.route('/api/config/save', methods=['POST'])
 def config_save():
     d = request.json
-    save_account_prompt(
-        d['account'], d['prompt'], d['daily_limit'], d['auto_interval'],
-        d['model_type'], d.get('schedule')
-    )
+    save_account_prompt(d['account'], d['prompt'], d['daily_limit'], d['auto_interval'], d['model_type'], d.get('schedule'))
     return jsonify({'success': True})
-
-@app.route('/api/config/verbose', methods=['GET', 'POST'])
-def config_verbose():
-    if request.method == 'GET':
-        return jsonify({"verbose": get_manual_verbose_mode()})
-    else:
-        data = request.json
-        enabled = data.get("verbose", False)
-        set_manual_verbose_mode(enabled)
-        return jsonify({"success": True, "verbose": enabled})
 
 @app.route('/api/manual/auto_symbol')
 def manual_auto_symbol():
@@ -914,9 +916,8 @@ def manual_auto_symbol():
 @app.route('/api/manual/full_topic')
 def manual_full_topic():
     symbol = request.args.get('symbol', '').strip()
-    verbose = get_manual_verbose_mode()
     from topic_main import run_topic
-    topic = run_topic(target_symbol=symbol, verbose=verbose)
+    topic = run_topic(target_symbol=symbol, verbose=True)
     return jsonify({'success': True, 'topic': topic.get('text', '')})
 
 @app.route('/api/manual/generate_ai', methods=['POST'])
@@ -927,9 +928,7 @@ def manual_generate_ai():
     acc = get_account_by_key(k)
     from ai_core import generate_content
     api_key = ZHIPU_API_KEY if acc.get('model_type') == 'zhipu' else DEEPSEEK_API_KEY
-    c, _ = generate_content(
-        {'text': t}, api_key=api_key, model_type=acc.get('model_type', 'zhipu'), custom_prompt=acc.get('prompt', '')
-    )
+    c, _ = generate_content({'text': t}, api_key=api_key, model_type=acc.get('model_type', 'zhipu'), custom_prompt=acc.get('prompt', ''))
     return c or ''
 
 @app.route('/api/manual/post', methods=['POST'])
@@ -944,11 +943,52 @@ def manual_post():
     pid = str(pid) if pid else '未知'
     if ok:
         save_post_record('manual', acc['name'], s, c, pid)
-        inc_manual_published(acc['name'])  # 增加手动计数
+        inc_manual_published(acc['name'])
         cfg = load_json(CONFIG_FILE)
-        cfg[f"{acc['name']}_last_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cfg[f"{acc['name']}_last_manual_run"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cfg[f"{acc['name']}_last_run"] = now_str
+        cfg[f"{acc['name']}_last_manual_run"] = now_str
         save_json(CONFIG_FILE, cfg)
+    return jsonify({'success': ok, 'post_id': pid, 'msg': msg})
+
+# ======================== 新增：长文发布接口 ========================
+@app.route('/api/article/post', methods=['POST'])
+def article_post():
+    account_key = request.form.get('account_key', '').strip()
+    title = request.form.get('title', '').strip()
+    content = request.form.get('content', '').strip()
+    cover_file = request.files.get('cover_image')
+
+    if not account_key:
+        return jsonify({'success': False, 'msg': '请选择发布账号'})
+    if not title:
+        return jsonify({'success': False, 'msg': '文章标题不能为空'})
+    if not content:
+        return jsonify({'success': False, 'msg': '文章正文不能为空'})
+
+    acc = get_account_by_key(account_key)
+    if not acc:
+        return jsonify({'success': False, 'msg': '指定账号不存在'})
+
+    from post_main import upload_image, post_article
+    cover_url = ""
+    if cover_file and cover_file.filename:
+        ok_upload, url, err_msg = upload_image(cover_file, account_key)
+        if not ok_upload:
+            return jsonify({'success': False, 'msg': f'封面图片上传失败: {err_msg}'})
+        cover_url = url
+
+    ok, msg, pid = post_article(title, content, cover_url, account_key)
+    pid = str(pid) if pid else '未知'
+    if ok:
+        save_post_record('article', acc['name'], title[:20], content, pid)
+        inc_manual_published(acc['name'])
+        cfg = load_json(CONFIG_FILE)
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cfg[f"{acc['name']}_last_run"] = now_str
+        cfg[f"{acc['name']}_last_article_run"] = now_str
+        save_json(CONFIG_FILE, cfg)
+
     return jsonify({'success': ok, 'post_id': pid, 'msg': msg})
 
 @app.route('/api/records')
@@ -975,7 +1015,7 @@ def records_export():
         res.append(r)
     def csv_escape(s):
         return s.replace('"', '""') if isinstance(s, str) else s
-    csv = '模式,账号,日期,时间,交易对,ID,状态,内容\n'
+    csv = '模式,账号,日期,时间,标题/币种,ID,状态,内容\n'
     for r in res:
         csv += f"{csv_escape(r['mode'])},{csv_escape(r['account'])},{csv_escape(r['date'])},{csv_escape(r['time'])},{csv_escape(r['symbol'])},{csv_escape(r['post_id'])},{csv_escape(r['status'])},\"{csv_escape(r['content'])}\"\n"
     response = make_response(csv)
@@ -992,6 +1032,5 @@ def records_delete():
     return jsonify({'success': True, 'deleted_count': cnt})
 
 if __name__ == '__main__':
-    # 启动时恢复计数
     recover_counts_from_records()
     app.run(host='0.0.0.0', port=5000, debug=False)
