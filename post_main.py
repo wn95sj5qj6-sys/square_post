@@ -2,14 +2,15 @@ import requests
 
 
 def post_content(content, api_key):
-  """发布短动态"""
+  """发布短动态（进入【动态】分类）"""
   try:
     headers = {
         "X-Square-OpenAPI-Key": api_key.strip(),
         "Content-Type": "application/json",
         "clienttype": "binanceSkill",
     }
-    data = {"bodyTextOnly": content.strip()}
+    # 短动态专属字段
+    data = {"bodyTextOnly": content.strip(), "contentType": 1}
     r = requests.post(
         "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add",
         headers=headers,
@@ -27,7 +28,7 @@ def post_content(content, api_key):
 
 
 def post_article(title, content, api_key):
-  """发布文章长文（方案A：标题自动排版合并，纯文本标准提交）"""
+  """发布长文（进入【文章】分类）"""
   try:
     headers = {
         "X-Square-OpenAPI-Key": api_key.strip(),
@@ -35,13 +36,12 @@ def post_article(title, content, api_key):
         "clienttype": "binanceSkill",
     }
 
-    # 将标题与多段落正文进行结构化排版
-    if title and title.strip():
-      full_article = f"📌 【{title.strip()}】\n\n{content.strip()}"
-    else:
-      full_article = content.strip()
-
-    data = {"bodyTextOnly": full_article}
+    # 核心修改：使用独立 title + bodyText + contentType: 2 声明为文章
+    data = {
+        "title": title.strip(),
+        "bodyText": content.strip(),
+        "contentType": 2,
+    }
 
     r = requests.post(
         "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add",
