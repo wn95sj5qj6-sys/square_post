@@ -5,6 +5,7 @@ import threading
 import time
 import traceback
 import urllib.parse
+from werkzeug.exceptions import HTTPException
 from flask import (
     Flask,
     Response,
@@ -1220,8 +1221,17 @@ def records_delete():
 
 
 # ======================== 全局异常拦截处理 ========================
+from werkzeug.exceptions import HTTPException
+
+
+# ======================== 全局异常拦截处理 ========================
 @app.errorhandler(Exception)
 def handle_global_exception(e):
+  # 正常放行 404/405 等标准 HTTP 状态码，不打印错误堆栈
+  if isinstance(e, HTTPException):
+    return e
+
+  # 只针对真正的 Python 代码崩溃/运行时异常打印堆栈
   print("❌ [服务端未捕获异常]:", e)
   traceback.print_exc()
   return jsonify({"success": False, "msg": f"服务端发生异常: {str(e)}"}), 500
