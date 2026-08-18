@@ -5,7 +5,6 @@ import threading
 import time
 import traceback
 import urllib.parse
-from werkzeug.exceptions import HTTPException
 from flask import (
     Flask,
     Response,
@@ -22,6 +21,7 @@ from schedule_core import (
     inc_manual_published,
     set_daily_stats,
 )
+from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__)
 
@@ -391,11 +391,10 @@ UI_TEMPLATE = """
         .record-content { font-size:14px; line-height:1.5; }
         .delete-section { margin-top:16px; padding-top:16px; border-top:1px solid var(--border); }
         .grid-row { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; margin-bottom:12px; }
-        .emoji-bar { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; padding:8px; background:var(--light-gray); border-radius:10px; }
-        .emoji-btn { background:none; border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:16px; cursor:pointer; background:white; }
-        .emoji-btn:hover { background:#f2f2f7; transform:scale(1.1); }
-        .cover-preview-wrapper { margin-top:10px; display:none; }
-        .cover-preview-img { max-height:180px; width:auto; border-radius:10px; border:1px solid var(--border); object-fit:cover; }
+        .emoji-bar { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; padding:8px; background:var(--light-gray); border-radius:10px; align-items:center; }
+        .emoji-btn { background:none; border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:15px; cursor:pointer; background:white; }
+        .emoji-btn:hover { background:#f2f2f7; transform:scale(1.08); }
+        .symbol-btn { font-weight:bold; color:var(--primary); background:#eef6ff; border-color:#bcdbff; }
         @media(max-width:480px){ .card{padding:16px;} .account-actions-wrapper{flex-direction:column;} .grid-row{grid-template-columns:1fr;} }
     </style>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
@@ -488,7 +487,7 @@ UI_TEMPLATE = """
                 <div class="log-box" id="manual_log">等待操作...</div>
             </div>
 
-            <!-- 3. 独立文章发布模式 -->
+            <!-- 3. 独立文章发布模式（方案A 文本排版增强版） -->
             <div id="article" class="tab-content">
                 <div class="form-group">
                     <label class="form-label">选择发布账号</label>
@@ -503,40 +502,34 @@ UI_TEMPLATE = """
                     <input type="text" id="article_title" class="form-control" placeholder="请输入引人注目的文章标题...">
                 </div>
                 <div class="form-group">
-                    <label class="form-label">封面图片上传</label>
-                    <input type="file" id="article_cover_input" class="form-control" accept="image/*" onchange="handleCoverPreview(event)">
-                    <div id="cover_preview_box" class="cover-preview-wrapper">
-                        <img id="cover_preview_img" class="cover-preview-img" src="" alt="封面预览">
+                    <label class="form-label">快捷符号与常用表情 (点击直接插入正文光标处)</label>
+                    <div class="emoji-bar">
+                        <!-- 快捷功能符号 -->
+                        <button type="button" class="emoji-btn symbol-btn" onclick="insertSymbolToArticle('#')"># 话题</button>
+                        <button type="button" class="emoji-btn symbol-btn" onclick="insertSymbolToArticle('$')">$ 标的</button>
+                        <button type="button" class="emoji-btn symbol-btn" onclick="insertSymbolToArticle('@')">@ 用户</button>
+                        <span style="border-left:1px solid var(--border);height:20px;margin:0 4px;"></span>
+                        <!-- 常用金融/情绪 Emoji -->
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('🔥')">🔥</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('🚀')">🚀</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('📈')">📈</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('📉')">📉</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('⚠️')">⚠️</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('💰')">💰</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('📊')">📊</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('💎')">💎</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('🐂')">🐂</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('🐻')">🐻</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('🚨')">🚨</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('🎯')">🎯</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('👀')">👀</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('👇')">👇</button>
+                        <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('💡')">💡</button>
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">正文工具栏</label>
-                    <div class="emoji-bar" style="display:flex; align-items:center; justify-content:space-between;">
-                        <div>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🔥')">🔥</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🚀')">🚀</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📈')">📈</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📉')">📉</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('⚠️')">⚠️</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💰')">💰</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('📊')">📊</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('💎')">💎</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🐂')">🐂</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🐻')">🐻</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🚨')">🚨</button>
-                            <button type="button" class="emoji-btn" onclick="insertEmojiToArticle('🎯')">🎯</button>
-                        </div>
-                        <div>
-                            <input type="file" id="inline_img_picker" accept="image/*" style="display:none;" onchange="handleInlineImageUpload(event)">
-                            <button type="button" class="btn btn-secondary" style="padding:6px 12px; font-size:13px;" onclick="document.getElementById('inline_img_picker').click()">
-                                <i class="fa fa-picture-o"></i> 插入正文配图
-                            </button>
-                        </div>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">文章正文（支持多段落、换行、配图与表情符）</label>
-                    <textarea id="article_content" class="form-control" style="min-height:220px;" placeholder="在此输入深度行情剖析、策略观点或资讯长文..."></textarea>
+                    <label class="form-label">文章正文（支持多段落、换行、#话题、$币种 与 Emoji）</label>
+                    <textarea id="article_content" class="form-control" style="min-height:240px;" placeholder="在此输入深度行情剖析、宏观观点或策略长文..."></textarea>
                 </div>
                 <button class="btn btn-primary" onclick="submitArticlePost()" style="width:100%" id="article_submit_btn">
                     <i class="fa fa-paper-plane"></i> 确认发布长文至币安广场
@@ -812,115 +805,44 @@ UI_TEMPLATE = """
             });
         }
 
-        // ================= 文章专属 JS 逻辑 =================
-        function insertEmojiToArticle(emoji) {
+        // ================= 文章专属 JS 逻辑（纯文本排版与符号插入） =================
+        function insertSymbolToArticle(symbol) {
             const textarea = document.getElementById('article_content');
             const start = textarea.selectionStart;
             const end = textarea.selectionEnd;
             const text = textarea.value;
-            textarea.value = text.substring(0, start) + emoji + text.substring(end);
+            textarea.value = text.substring(0, start) + symbol + text.substring(end);
             textarea.focus();
-            textarea.selectionStart = textarea.selectionEnd = start + emoji.length;
-        }
-
-        function handleCoverPreview(event) {
-            const file = event.target.files[0];
-            const previewBox = document.getElementById('cover_preview_box');
-            const previewImg = document.getElementById('cover_preview_img');
-            
-            if (file) {
-                // 限制封面大小不超过 5MB
-                if (file.size > 5 * 1024 * 1024) {
-                    alert('⚠️ 封面图片过大（超过 5MB），请压缩或选择更小的图片！');
-                    event.target.value = '';
-                    previewBox.style.display = 'none';
-                    return;
-                }
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    previewImg.src = e.target.result;
-                    previewBox.style.display = 'block';
-                }
-                reader.readAsDataURL(file);
-            } else {
-                previewBox.style.display = 'none';
-            }
-        }
-
-        function handleInlineImageUpload(event) {
-            const file = event.target.files[0];
-            const accountKey = document.getElementById('article_account').value;
-            const logBox = document.getElementById('article_log');
-
-            if (!file) return;
-            if (!accountKey) {
-                alert('请先在上方选择发布账号！');
-                return;
-            }
-
-            logBox.textContent = '⏳ 正在上传正文配图到币安服务器...';
-
-            const formData = new FormData();
-            formData.append('account_key', accountKey);
-            formData.append('inline_image', file);
-
-            fetch('/api/article/upload_inline_image', {
-                method: 'POST',
-                body: formData
-            }).then(r => r.json()).then(d => {
-                if (d.success) {
-                    logBox.textContent = '✅ 正文配图上传成功，已插入光标位置！';
-                    const markdownImg = `\\n\\n![行情分析图](${d.url})\\n\\n`;
-                    const textarea = document.getElementById('article_content');
-                    const start = textarea.selectionStart;
-                    const end = textarea.selectionEnd;
-                    const text = textarea.value;
-                    textarea.value = text.substring(0, start) + markdownImg + text.substring(end);
-                    textarea.focus();
-                    textarea.selectionStart = textarea.selectionEnd = start + markdownImg.length;
-                } else {
-                    logBox.textContent = `❌ 插图上传失败: ${d.msg}`;
-                }
-                event.target.value = '';
-            }).catch(err => {
-                logBox.textContent = `❌ 插图上传异常: ${err}`;
-                event.target.value = '';
-            });
+            textarea.selectionStart = textarea.selectionEnd = start + symbol.length;
         }
 
         function submitArticlePost() {
             const k = document.getElementById('article_account').value;
             const title = document.getElementById('article_title').value.trim();
             const content = document.getElementById('article_content').value.trim();
-            const coverInput = document.getElementById('article_cover_input');
             const logBox = document.getElementById('article_log');
             const submitBtn = document.getElementById('article_submit_btn');
 
             if (!title) { alert('文章标题不能为空！'); return; }
             if (!content) { alert('文章正文不能为空！'); return; }
 
-            const formData = new FormData();
-            formData.append('account_key', k);
-            formData.append('title', title);
-            formData.append('content', content);
-            if (coverInput.files[0]) {
-                formData.append('cover_image', coverInput.files[0]);
-            }
-
             submitBtn.disabled = true;
-            logBox.textContent = '⏳ 正在上传封面并向币安广场发布文章...';
+            logBox.textContent = '⏳ 正在排版并向币安广场发布长文...';
 
             fetch('/api/article/post', {
                 method: 'POST',
-                body: formData
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    account_key: k,
+                    title: title,
+                    content: content
+                })
             }).then(r => r.json()).then(d => {
                 submitBtn.disabled = false;
                 if (d.success) {
                     logBox.textContent = `✅ 文章发布成功！ID: ${d.post_id}`;
                     document.getElementById('article_title').value = '';
                     document.getElementById('article_content').value = '';
-                    document.getElementById('article_cover_input').value = '';
-                    document.getElementById('cover_preview_box').style.display = 'none';
                     refreshAutoPage();
                     loadRecords();
                 } else {
@@ -928,7 +850,7 @@ UI_TEMPLATE = """
                 }
             }).catch(err => {
                 submitBtn.disabled = false;
-                logBox.textContent = `❌ 网络异常: ${err}`;
+                logBox.textContent = `❌ 请求异常: ${err}`;
             });
         }
         
@@ -1109,31 +1031,13 @@ def manual_post():
   return jsonify({"success": ok, "post_id": pid, "msg": msg})
 
 
-# ======================== 长文与插图接口 ========================
-@app.route("/api/article/upload_inline_image", methods=["POST"])
-def upload_inline_image():
-  account_key = request.form.get("account_key", "").strip()
-  image_file = request.files.get("inline_image")
-
-  if not account_key:
-    return jsonify({"success": False, "msg": "请先选择发布账号"})
-  if not image_file or not image_file.filename:
-    return jsonify({"success": False, "msg": "未选择图片文件"})
-
-  from post_main import upload_image
-
-  ok, img_url, msg = upload_image(image_file, account_key)
-  if ok:
-    return jsonify({"success": True, "url": img_url})
-  return jsonify({"success": False, "msg": msg})
-
-
+# ======================== 方案 A：长文发布接口（JSON 直传） ========================
 @app.route("/api/article/post", methods=["POST"])
 def article_post():
-  account_key = request.form.get("account_key", "").strip()
-  title = request.form.get("title", "").strip()
-  content = request.form.get("content", "").strip()
-  cover_file = request.files.get("cover_image")
+  d = request.json or {}
+  account_key = d.get("account_key", "").strip()
+  title = d.get("title", "").strip()
+  content = d.get("content", "").strip()
 
   if not account_key:
     return jsonify({"success": False, "msg": "请选择发布账号"})
@@ -1146,16 +1050,9 @@ def article_post():
   if not acc:
     return jsonify({"success": False, "msg": "指定账号不存在"})
 
-  from post_main import post_article, upload_image
+  from post_main import post_article
 
-  cover_url = ""
-  if cover_file and cover_file.filename:
-    ok_upload, url, err_msg = upload_image(cover_file, account_key)
-    if not ok_upload:
-      return jsonify({"success": False, "msg": f"封面图片上传失败: {err_msg}"})
-    cover_url = url
-
-  ok, msg, pid = post_article(title, content, cover_url, account_key)
+  ok, msg, pid = post_article(title, content, account_key)
   pid = str(pid) if pid else "未知"
   if ok:
     save_post_record("article", acc["name"], title[:20], content, pid)
@@ -1221,17 +1118,11 @@ def records_delete():
 
 
 # ======================== 全局异常拦截处理 ========================
-from werkzeug.exceptions import HTTPException
-
-
-# ======================== 全局异常拦截处理 ========================
 @app.errorhandler(Exception)
 def handle_global_exception(e):
-  # 正常放行 404/405 等标准 HTTP 状态码，不打印错误堆栈
+  # 正常放行 404 等标准 HTTP 异常
   if isinstance(e, HTTPException):
     return e
-
-  # 只针对真正的 Python 代码崩溃/运行时异常打印堆栈
   print("❌ [服务端未捕获异常]:", e)
   traceback.print_exc()
   return jsonify({"success": False, "msg": f"服务端发生异常: {str(e)}"}), 500
