@@ -19,8 +19,6 @@ from schedule_core import (
 )
 
 app = Flask(__name__)
-
-# 自动处理 Railway / 反向代理 Header
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # ======================== 核心配置 ========================
@@ -39,9 +37,7 @@ GLOBAL_CONFIG_FILE = f"{DATA_DIR}/global_config.json"
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# 内存图片缓存字典，确保币安请求时 0 毫秒响应
 IMAGE_MEMORY_CACHE = {}
-
 account_running_status = {}
 status_lock = threading.Lock()
 
@@ -791,7 +787,6 @@ UI_TEMPLATE = """
             reader.onload = function(e) {
                 const img = new Image();
                 img.onload = function() {
-                    // 目标尺寸：1200 x 675 (严格 16:9 比例)
                     const TARGET_W = 1200;
                     const TARGET_H = 675;
                     const TARGET_RATIO = TARGET_W / TARGET_H;
@@ -924,8 +919,7 @@ def index():
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
-    """对外静态托管上传的封面图片，优先从内存毫秒级返回二进制流"""
-    # 1. 优先内存命中，0毫秒返回
+    """对外静态托管上传的封面图片"""
     if filename in IMAGE_MEMORY_CACHE:
         data = IMAGE_MEMORY_CACHE[filename]
         response = make_response(data)
@@ -1047,7 +1041,7 @@ def manual_post():
         save_json(CONFIG_FILE, cfg)
     return jsonify({"success": ok, "post_id": pid, "msg": msg})
 
-# ======================== 长文发布接口（生成 Railway 自身公网直链） ========================
+# ======================== 长文发布接口 ========================
 @app.route("/api/article/post", methods=["POST"])
 def article_post():
     account_key = request.form.get("account_key", "").strip()
@@ -1066,20 +1060,19 @@ def article_post():
     if not acc:
         return jsonify({"success": False, "msg": "指定账号不存在"})
 
+    cover_bytes = None
     cover_url = ""
     if cover_file and cover_file.filename:
         ext = os.path.splitext(cover_file.filename)[1].lower() or ".jpg"
         unique_filename = f"cover_{int(time.time())}_{random.randint(1000, 9999)}{ext}"
         save_path = os.path.join(UPLOAD_FOLDER, unique_filename)
         
-        file_bytes = cover_file.read()
+        cover_bytes = cover_file.read()
         with open(save_path, "wb") as f:
-            f.write(file_bytes)
+            f.write(cover_bytes)
         
-        # 存入全局内存缓存，确保币安抓取时零 I/O 毫秒级响应
-        IMAGE_MEMORY_CACHE[unique_filename] = file_bytes
+        IMAGE_MEMORY_CACHE[unique_filename] = cover_bytes
 
-        # 读取公开域名
         railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
         if railway_domain:
             host = railway_domain
@@ -1087,13 +1080,9 @@ def article_post():
             host = request.headers.get("X-Forwarded-Host", request.host)
 
         cover_url = f"https://{host}/uploads/{unique_filename}"
-        print(f"📸 生成 Railway 自建封面图片公网直链: {cover_url}")
-        
-        # 给边缘节点预留 300 毫秒预热时间
-        time.sleep(0.3)
 
     from post_main import post_article
-    ok, msg, pid = post_article(title, content, account_key, cover_url=cover_url)
+    ok, msg, pid = post_article(title, content, account_key, cover_file_bytes=cover_bytes, cover_url=cover_url)
     pid = str(pid) if pid else "未知"
     if ok:
         save_post_record("article", acc["name"], title[:20], content, pid)
