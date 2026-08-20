@@ -46,7 +46,7 @@ def post_content(content, api_key):
         return False, str(e), ""
 
 def post_article(title, content, api_key, cover_url=""):
-    """长文章发布（通过 Railway 自身生成的封面直链提交）"""
+    """长文章发布（支持携带 Railway 封面直链）"""
     try:
         session = get_session()
         headers = {
@@ -67,7 +67,6 @@ def post_article(title, content, api_key, cover_url=""):
             "format": "MARKDOWN"
         }
 
-        # 携带服务自身生成的公网 HTTPS 封面直链
         if cover_url and cover_url.strip():
             data["cover"] = cover_url.strip()
 
