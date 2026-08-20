@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import random
 import threading
 import time
 import traceback
@@ -12,6 +13,7 @@ from flask import (
     make_response,
     render_template_string,
     request,
+    send_from_directory,
 )
 from schedule_core import (
     can_publish,
@@ -22,8 +24,12 @@ from schedule_core import (
     set_daily_stats,
 )
 from werkzeug.exceptions import HTTPException
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
+
+# 自动处理 Railway / Nginx 反向代理 Header，使 request 自动获取真实的 HTTPS 协议与域名
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # ======================== 核心配置 ========================
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "").strip()
@@ -32,11 +38,14 @@ DEFAULT_AUTO_INTERVAL = int(os.getenv("AUTO_INTERVAL_MINUTES", "60"))
 DEFAULT_DAILY_LIMIT = int(os.getenv("DAILY_MAX_LIMIT", "8"))
 
 DATA_DIR = "data"
+UPLOAD_FOLDER = os.path.join(DATA_DIR, "uploads")
 DB_FILE = f"{DATA_DIR}/records.json"
 CONFIG_FILE = f"{DATA_DIR}/config.json"
 PROMPT_FILE = f"{DATA_DIR}/prompts.json"
 GLOBAL_CONFIG_FILE = f"{DATA_DIR}/global_config.json"
+
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 account_running_status = {}
 status_lock = threading.Lock()
@@ -395,6 +404,11 @@ UI_TEMPLATE = """
         .emoji-btn { background:none; border:1px solid var(--border); border-radius:6px; padding:4px 8px; font-size:15px; cursor:pointer; background:white; }
         .emoji-btn:hover { background:#f2f2f7; transform:scale(1.08); }
         .symbol-btn { font-weight:bold; color:var(--primary); background:#eef6ff; border-color:#bcdbff; }
+        .cover-uploader { border:2px dashed var(--border); padding:16px; border-radius:12px; text-align:center; background:#fafafa; cursor:pointer; transition:border-color 0.2s; }
+        .cover-uploader:hover { border-color:var(--primary); }
+        .cover-preview-container { margin-top:10px; width:100%; aspect-ratio:16/9; max-height:220px; border-radius:10px; overflow:hidden; border:1px solid var(--border); position:relative; background:#000; display:none; }
+        .cover-preview-img { width:100%; height:100%; object-fit:cover; }
+        .cover-tag { position:absolute; bottom:8px; right:8px; background:rgba(0,0,0,0.65); color:#fff; font-size:11px; padding:2px 8px; border-radius:4px; }
         @media(max-width:480px){ .card{padding:16px;} .account-actions-wrapper{flex-direction:column;} .grid-row{grid-template-columns:1fr;} }
     </style>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/font-awesome@4.7.0/css/font-awesome.min.css">
@@ -404,7 +418,7 @@ UI_TEMPLATE = """
         <div class="card">
             <div class="header">
                 <h1>币安广场内容发布系统</h1>
-                <span class="badge">v2.3</span>
+                <span class="badge">v2.4</span>
             </div>
             <div class="tabs">
                 <button class="tab-btn active" onclick="switchTab('auto')"><i class="fa fa-robot"></i> 自动模式</button>
@@ -487,7 +501,7 @@ UI_TEMPLATE = """
                 <div class="log-box" id="manual_log">等待操作...</div>
             </div>
 
-            <!-- 3. 独立文章发布模式（方案A 文本排版增强版） -->
+            <!-- 3. 独立长文章模式 -->
             <div id="article" class="tab-content">
                 <div class="form-group">
                     <label class="form-label">选择发布账号</label>
@@ -501,15 +515,29 @@ UI_TEMPLATE = """
                     <label class="form-label">文章标题</label>
                     <input type="text" id="article_title" class="form-control" placeholder="请输入引人注目的文章标题...">
                 </div>
+                
+                <!-- 文章封面上传区域 -->
                 <div class="form-group">
-                    <label class="form-label">快捷符号与常用表情 (点击直接插入正文光标处)</label>
+                    <label class="form-label">文章封面图片（选填，系统将自动裁切为 16:9 最佳展示比例）</label>
+                    <div class="cover-uploader" onclick="document.getElementById('article_cover_file').click()">
+                        <input type="file" id="article_cover_file" accept="image/*" style="display:none;" onchange="handleCoverSelection(event)">
+                        <i class="fa fa-cloud-upload" style="font-size:24px;color:var(--primary);margin-bottom:4px;"></i>
+                        <div style="font-size:14px;font-weight:500;">点击上传本地封面图片</div>
+                        <div style="font-size:12px;color:var(--gray);margin-top:2px;">标准 16:9 (1200×675)，最大 5MB，自动智能裁切适配</div>
+                    </div>
+                    <div id="cover_preview_container" class="cover-preview-container">
+                        <img id="cover_preview_img" class="cover-preview-img" src="" alt="封面预览">
+                        <div class="cover-tag" id="cover_size_tag">16:9 裁切完毕</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">快捷符号与常用表情 (点击插入正文光标处)</label>
                     <div class="emoji-bar">
-                        <!-- 快捷功能符号 -->
                         <button type="button" class="emoji-btn symbol-btn" onclick="insertSymbolToArticle('#')"># 话题</button>
                         <button type="button" class="emoji-btn symbol-btn" onclick="insertSymbolToArticle('$')">$ 标的</button>
                         <button type="button" class="emoji-btn symbol-btn" onclick="insertSymbolToArticle('@')">@ 用户</button>
                         <span style="border-left:1px solid var(--border);height:20px;margin:0 4px;"></span>
-                        <!-- 常用金融/情绪 Emoji -->
                         <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('🔥')">🔥</button>
                         <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('🚀')">🚀</button>
                         <button type="button" class="emoji-btn" onclick="insertSymbolToArticle('📈')">📈</button>
@@ -528,7 +556,7 @@ UI_TEMPLATE = """
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">文章正文（支持多段落、换行、#话题、$币种 与 Emoji）</label>
+                    <label class="form-label">文章正文（支持 Markdown 结构、段落、#话题、$代币）</label>
                     <textarea id="article_content" class="form-control" style="min-height:240px;" placeholder="在此输入深度行情剖析、宏观观点或策略长文..."></textarea>
                 </div>
                 <button class="btn btn-primary" onclick="submitArticlePost()" style="width:100%" id="article_submit_btn">
@@ -632,6 +660,8 @@ UI_TEMPLATE = """
     </div>
 
     <script>
+        let currentProcessedCoverBlob = null;
+
         function switchTab(tabId) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -805,7 +835,7 @@ UI_TEMPLATE = """
             });
         }
 
-        // ================= 文章专属 JS 逻辑（纯文本排版与符号插入） =================
+        // ================= 文章专属 JS 逻辑（含智能 16:9 裁切） =================
         function insertSymbolToArticle(symbol) {
             const textarea = document.getElementById('article_content');
             const start = textarea.selectionStart;
@@ -814,6 +844,52 @@ UI_TEMPLATE = """
             textarea.value = text.substring(0, start) + symbol + text.substring(end);
             textarea.focus();
             textarea.selectionStart = textarea.selectionEnd = start + symbol.length;
+        }
+
+        function handleCoverSelection(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    // 目标尺寸：1200 x 675 (严格 16:9 比例)
+                    const TARGET_W = 1200;
+                    const TARGET_H = 675;
+                    const TARGET_RATIO = TARGET_W / TARGET_H;
+
+                    const canvas = document.createElement('canvas');
+                    canvas.width = TARGET_W;
+                    canvas.height = TARGET_H;
+                    const ctx = canvas.getContext('2d');
+
+                    let srcX = 0, srcY = 0, srcW = img.width, srcH = img.height;
+                    const currentRatio = img.width / img.height;
+
+                    // 计算居中裁切区域
+                    if (currentRatio > TARGET_RATIO) {
+                        srcW = img.height * TARGET_RATIO;
+                        srcX = (img.width - srcW) / 2;
+                    } else {
+                        srcH = img.width / TARGET_RATIO;
+                        srcY = (img.height - srcH) / 2;
+                    }
+
+                    // 绘制裁切后的高质量 16:9 图像
+                    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, TARGET_W, TARGET_H);
+
+                    canvas.toBlob(function(blob) {
+                        currentProcessedCoverBlob = blob;
+                        const previewUrl = URL.createObjectURL(blob);
+                        document.getElementById('cover_preview_img').src = previewUrl;
+                        document.getElementById('cover_preview_container').style.display = 'block';
+                        document.getElementById('cover_size_tag').textContent = `16:9 (1200×675) | ${(blob.size / 1024).toFixed(0)}KB`;
+                    }, 'image/jpeg', 0.88);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
         }
 
         function submitArticlePost() {
@@ -827,22 +903,28 @@ UI_TEMPLATE = """
             if (!content) { alert('文章正文不能为空！'); return; }
 
             submitBtn.disabled = true;
-            logBox.textContent = '⏳ 正在排版并向币安广场发布长文...';
+            logBox.textContent = '⏳ 正在向币安广场发布长文...';
+
+            const formData = new FormData();
+            formData.append('account_key', k);
+            formData.append('title', title);
+            formData.append('content', content);
+            if (currentProcessedCoverBlob) {
+                formData.append('cover_file', currentProcessedCoverBlob, 'cover.jpg');
+            }
 
             fetch('/api/article/post', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    account_key: k,
-                    title: title,
-                    content: content
-                })
+                body: formData
             }).then(r => r.json()).then(d => {
                 submitBtn.disabled = false;
                 if (d.success) {
                     logBox.textContent = `✅ 文章发布成功！ID: ${d.post_id}`;
                     document.getElementById('article_title').value = '';
                     document.getElementById('article_content').value = '';
+                    document.getElementById('article_cover_file').value = '';
+                    document.getElementById('cover_preview_container').style.display = 'none';
+                    currentProcessedCoverBlob = null;
                     refreshAutoPage();
                     loadRecords();
                 } else {
@@ -907,6 +989,12 @@ def index():
   return render_template_string(
       UI_TEMPLATE, accounts=accounts, today_stats=today_stats, today=today
   )
+
+
+@app.route("/uploads/<path:filename>")
+def uploaded_file(filename):
+  """对外静态托管上传的封面图片"""
+  return send_from_directory(UPLOAD_FOLDER, filename)
 
 
 @app.route("/api/auto/start")
@@ -1031,13 +1119,13 @@ def manual_post():
   return jsonify({"success": ok, "post_id": pid, "msg": msg})
 
 
-# ======================== 方案 A：长文发布接口（JSON 直传） ========================
+# ======================== 长文发布接口（生成 Railway 自身公网直链） ========================
 @app.route("/api/article/post", methods=["POST"])
 def article_post():
-  d = request.json or {}
-  account_key = d.get("account_key", "").strip()
-  title = d.get("title", "").strip()
-  content = d.get("content", "").strip()
+  account_key = request.form.get("account_key", "").strip()
+  title = request.form.get("title", "").strip()
+  content = request.form.get("content", "").strip()
+  cover_file = request.files.get("cover_file")
 
   if not account_key:
     return jsonify({"success": False, "msg": "请选择发布账号"})
@@ -1050,9 +1138,24 @@ def article_post():
   if not acc:
     return jsonify({"success": False, "msg": "指定账号不存在"})
 
+  cover_url = ""
+  if cover_file and cover_file.filename:
+    ext = os.path.splitext(cover_file.filename)[1].lower() or ".jpg"
+    unique_filename = (
+        f"cover_{int(time.time())}_{random.randint(1000, 9999)}{ext}"
+    )
+    save_path = os.path.join(UPLOAD_FOLDER, unique_filename)
+    cover_file.save(save_path)
+
+    # 自动获取反向代理后的真实协议 (https) 与公网域名 (xxx.up.railway.app)
+    scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
+    host = request.headers.get("X-Forwarded-Host", request.host)
+    cover_url = f"{scheme}://{host}/uploads/{unique_filename}"
+    print(f"📸 生成 Railway 自建封面图片公网直链: {cover_url}")
+
   from post_main import post_article
 
-  ok, msg, pid = post_article(title, content, account_key)
+  ok, msg, pid = post_article(title, content, account_key, cover_url=cover_url)
   pid = str(pid) if pid else "未知"
   if ok:
     save_post_record("article", acc["name"], title[:20], content, pid)
@@ -1120,7 +1223,6 @@ def records_delete():
 # ======================== 全局异常拦截处理 ========================
 @app.errorhandler(Exception)
 def handle_global_exception(e):
-  # 正常放行 404 等标准 HTTP 异常
   if isinstance(e, HTTPException):
     return e
   print("❌ [服务端未捕获异常]:", e)
