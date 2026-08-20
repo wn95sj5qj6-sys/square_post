@@ -28,7 +28,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
 
-# 自动处理 Railway / Nginx 反向代理 Header，使 request 自动获取真实的 HTTPS 协议与域名
+# 自动处理 Railway / 反向代理 Header
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # ======================== 核心配置 ========================
@@ -867,7 +867,6 @@ UI_TEMPLATE = """
                     let srcX = 0, srcY = 0, srcW = img.width, srcH = img.height;
                     const currentRatio = img.width / img.height;
 
-                    // 计算居中裁切区域
                     if (currentRatio > TARGET_RATIO) {
                         srcW = img.height * TARGET_RATIO;
                         srcX = (img.width - srcW) / 2;
@@ -876,7 +875,6 @@ UI_TEMPLATE = """
                         srcY = (img.height - srcH) / 2;
                     }
 
-                    // 绘制裁切后的高质量 16:9 图像
                     ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, TARGET_W, TARGET_H);
 
                     canvas.toBlob(function(blob) {
@@ -979,16 +977,15 @@ UI_TEMPLATE = """
 </html>
 """
 
-
 # ======================== 路由接口 ========================
 @app.route("/")
 def index():
-  accounts = get_all_accounts()[cite: 3]
-  today_stats = get_today_stats()[cite: 3]
-  today = str(datetime.date.today())[cite: 3]
+  accounts = get_all_accounts()
+  today_stats = get_today_stats()
+  today = str(datetime.date.today())
   return render_template_string(
       UI_TEMPLATE, accounts=accounts, today_stats=today_stats, today=today
-  )[cite: 3]
+  )
 
 
 @app.route("/uploads/<path:filename>")
@@ -1009,52 +1006,52 @@ def uploaded_file(filename):
 
 @app.route("/api/auto/start")
 def auto_start():
-  a = request.args.get("account")[cite: 3]
-  ok = start_account_auto_publish(a)[cite: 3]
-  return jsonify({"success": ok, "msg": "已启动" if ok else "已运行"})[cite: 3]
+  a = request.args.get("account")
+  ok = start_account_auto_publish(a)
+  return jsonify({"success": ok, "msg": "已启动" if ok else "已运行"})
 
 
 @app.route("/api/auto/stop")
 def auto_stop():
-  a = request.args.get("account")[cite: 3]
-  stop_account_auto_publish(a)[cite: 3]
-  return jsonify({"success": True, "msg": "已停止"})[cite: 3]
+  a = request.args.get("account")
+  stop_account_auto_publish(a)
+  return jsonify({"success": True, "msg": "已停止"})
 
 
 @app.route("/api/auto/status")
 def auto_status():
-  a = request.args.get("account")[cite: 3]
-  acc = get_account_by_name(a) or {}[cite: 3]
+  a = request.args.get("account")
+  acc = get_account_by_name(a) or {}
   return jsonify({
       "running": account_running_status.get(a, False),
       "daily_limit": acc.get("daily_limit", DEFAULT_DAILY_LIMIT),
       "auto_interval": acc.get("auto_interval", DEFAULT_AUTO_INTERVAL),
-  })[cite: 3]
+  })
 
 
 @app.route("/api/auto/refresh")
 def auto_refresh():
   return jsonify(
       {"accounts": get_all_accounts(), "today_stats": get_today_stats()}
-  )[cite: 3]
+  )
 
 
 @app.route("/api/config/load")
 def config_load():
-  a = request.args.get("account")[cite: 3]
-  acc = get_account_by_name(a) or {}[cite: 3]
+  a = request.args.get("account")
+  acc = get_account_by_name(a) or {}
   return jsonify({
       "prompt": acc.get("prompt", ""),
       "model_type": acc.get("model_type", "zhipu"),
       "daily_limit": acc.get("daily_limit", DEFAULT_DAILY_LIMIT),
       "auto_interval": acc.get("auto_interval", DEFAULT_AUTO_INTERVAL),
       "schedule": acc.get("schedule", {}),
-  })[cite: 3]
+  })
 
 
 @app.route("/api/config/save", methods=["POST"])
 def config_save():
-  d = request.json[cite: 3]
+  d = request.json
   save_account_prompt(
       d["account"],
       d["prompt"],
@@ -1062,71 +1059,71 @@ def config_save():
       d["auto_interval"],
       d["model_type"],
       d.get("schedule"),
-  )[cite: 3]
-  return jsonify({"success": True})[cite: 3]
+  )
+  return jsonify({"success": True})
 
 
 @app.route("/api/manual/auto_symbol")
 def manual_auto_symbol():
   try:
-    from topic_main import run_topic[cite: 3]
+    from topic_main import run_topic
 
-    topic = run_topic()[cite: 3]
-    symbol = topic.get("symbol", "BTCUSDT")[cite: 3]
-    return jsonify({"success": True, "symbol": symbol})[cite: 3]
+    topic = run_topic()
+    symbol = topic.get("symbol", "BTCUSDT")
+    return jsonify({"success": True, "symbol": symbol})
   except:
-    return jsonify({"success": True, "symbol": "BTCUSDT"})[cite: 3]
+    return jsonify({"success": True, "symbol": "BTCUSDT"})
 
 
 @app.route("/api/manual/full_topic")
 def manual_full_topic():
-  symbol = request.args.get("symbol", "").strip()[cite: 3]
-  from topic_main import run_topic[cite: 3]
+  symbol = request.args.get("symbol", "").strip()
+  from topic_main import run_topic
 
-  topic = run_topic(target_symbol=symbol, verbose=True)[cite: 3]
-  return jsonify({"success": True, "topic": topic.get("text", "")})[cite: 3]
+  topic = run_topic(target_symbol=symbol, verbose=True)
+  return jsonify({"success": True, "topic": topic.get("text", "")})
 
 
 @app.route("/api/manual/generate_ai", methods=["POST"])
 def manual_generate_ai():
-  d = request.json[cite: 3]
-  t = d["topic"][cite: 3]
-  k = d["account_key"][cite: 3]
-  acc = get_account_by_key(k)[cite: 3]
-  from ai_core import generate_content[cite: 3]
+  d = request.json
+  t = d["topic"]
+  k = d["account_key"]
+  acc = get_account_by_key(k)
+  from ai_core import generate_content
 
   api_key = (
       ZHIPU_API_KEY if acc.get("model_type") == "zhipu" else DEEPSEEK_API_KEY
-  )[cite: 3]
+  )
   c, _ = generate_content(
       {"text": t},
       api_key=api_key,
       model_type=acc.get("model_type", "zhipu"),
       custom_prompt=acc.get("prompt", ""),
-  )[cite: 3]
-  return c or ""[cite: 3]
+  )
+  return c or ""
 
 
 @app.route("/api/manual/post", methods=["POST"])
 def manual_post():
-  d = request.json[cite: 3]
-  k = d["account_key"][cite: 3]
-  c = d["content"][cite: 3]
-  s = d["symbol"][cite: 3]
-  acc = get_account_by_key(k)[cite: 3]
-  from post_main import post_content[cite: 3]
+  d = request.json
+  k = d["account_key"]
+  c = d["content"]
+  s = d["symbol"]
+  acc = get_account_by_key(k)
+  from post_main import post_content
 
-  ok, msg, pid = post_content(c, k)[cite: 3]
-  pid = str(pid) if pid else "未知"[cite: 3]
+  ok, msg, pid = post_content(c, k)
+  pid = str(pid) if pid else "未知"
   if ok:
-    save_post_record("manual", acc["name"], s, c, pid)[cite: 3]
-    inc_manual_published(acc["name"])[cite: 3]
-    cfg = load_json(CONFIG_FILE)[cite: 3]
-    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")[cite: 3]
-    cfg[f"{acc['name']}_last_run"] = now_str[cite: 3]
-    cfg[f"{acc['name']}_last_manual_run"] = now_str[cite: 3]
-    save_json(CONFIG_FILE, cfg)[cite: 3]
-  return jsonify({"success": ok, "post_id": pid, "msg": msg})[cite: 3]
+    save_post_record("manual", acc["name"], s, c, pid)
+    inc_manual_published(acc["name"])
+    cfg = load_json(CONFIG_FILE)
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cfg[f"{acc['name']}_last_run"] = now_str
+    cfg[f"{acc['name']}_last_manual_run"] = now_str
+    save_json(CONFIG_FILE, cfg)
+  return jsonify({"success": ok, "post_id": pid, "msg": msg})
 
 
 # ======================== 长文发布接口（生成 Railway 自身公网直链） ========================
@@ -1157,10 +1154,14 @@ def article_post():
     save_path = os.path.join(UPLOAD_FOLDER, unique_filename)
     cover_file.save(save_path)
 
-    # 自动获取反向代理后的真实协议 (https) 与公网域名 (xxx.up.railway.app)
-    scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
-    host = request.headers.get("X-Forwarded-Host", request.host)
-    cover_url = f"{scheme}://{host}/uploads/{unique_filename}"
+    # 优先读取 Railway 环境变量提供的公开域名
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    if railway_domain:
+      host = railway_domain
+    else:
+      host = request.headers.get("X-Forwarded-Host", request.host)
+
+    cover_url = f"https://{host}/uploads/{unique_filename}"
     print(f"📸 生成 Railway 自建封面图片公网直链: {cover_url}")
 
   from post_main import post_article
@@ -1181,65 +1182,65 @@ def article_post():
 
 @app.route("/api/records")
 def records():
-  a = request.args.get("account")[cite: 3]
-  d = request.args.get("date")[cite: 3]
-  db = load_json(DB_FILE, [])[cite: 3]
-  res = [][cite: 3]
-  for r in db:[cite: 3]
-    if a and r["account"] != a:[cite: 3]
-      continue[cite: 3]
-    if d and r["date"] != d:[cite: 3]
-      continue[cite: 3]
-    res.append(r)[cite: 3]
-  return jsonify(res)[cite: 3]
+  a = request.args.get("account")
+  d = request.args.get("date")
+  db = load_json(DB_FILE, [])
+  res = []
+  for r in db:
+    if a and r["account"] != a:
+      continue
+    if d and r["date"] != d:
+      continue
+    res.append(r)
+  return jsonify(res)
 
 
 @app.route("/api/records/export")
 def records_export():
-  a = request.args.get("account")[cite: 3]
-  d = request.args.get("date")[cite: 3]
-  db = load_json(DB_FILE, [])[cite: 3]
-  res = [][cite: 3]
-  for r in db:[cite: 3]
-    if a and r["account"] != a:[cite: 3]
-      continue[cite: 3]
-    if d and r["date"] != d:[cite: 3]
-      continue[cite: 3]
-    res.append(r)[cite: 3]
+  a = request.args.get("account")
+  d = request.args.get("date")
+  db = load_json(DB_FILE, [])
+  res = []
+  for r in db:
+    if a and r["account"] != a:
+      continue
+    if d and r["date"] != d:
+      continue
+    res.append(r)
 
-  def csv_escape(s):[cite: 3]
-    return s.replace('"', '""') if isinstance(s, str) else s[cite: 3]
+  def csv_escape(s):
+    return s.replace('"', '""') if isinstance(s, str) else s
 
-  csv = "模式,账号,日期,时间,标题/币种,ID,状态,内容\n"[cite: 3]
-  for r in res:[cite: 3]
+  csv = "模式,账号,日期,时间,标题/币种,ID,状态,内容\n"
+  for r in res:
     csv += (
         f"{csv_escape(r['mode'])},{csv_escape(r['account'])},{csv_escape(r['date'])},{csv_escape(r['time'])},{csv_escape(r['symbol'])},{csv_escape(r['post_id'])},{csv_escape(r['status'])},\"{csv_escape(r['content'])}\"\n"
-    )[cite: 3]
-  response = make_response(csv)[cite: 3]
-  response.headers["Content-Type"] = "text/csv;charset=utf-8"[cite: 3]
-  response.headers["Content-Disposition"] = "attachment;filename=records.csv"[cite: 3]
-  return response[cite: 3]
+    )
+  response = make_response(csv)
+  response.headers["Content-Type"] = "text/csv;charset=utf-8"
+  response.headers["Content-Disposition"] = "attachment;filename=records.csv"
+  return response
 
 
 @app.route("/api/records/delete", methods=["POST"])
 def records_delete():
-  a = request.args.get("account")[cite: 3]
-  d = request.args.get("date")[cite: 3]
-  all_records = request.args.get("all") == "true"[cite: 3]
-  cnt = delete_records(a, d, all_records)[cite: 3]
-  return jsonify({"success": True, "deleted_count": cnt})[cite: 3]
+  a = request.args.get("account")
+  d = request.args.get("date")
+  all_records = request.args.get("all") == "true"
+  cnt = delete_records(a, d, all_records)
+  return jsonify({"success": True, "deleted_count": cnt})
 
 
 # ======================== 全局异常拦截处理 ========================
 @app.errorhandler(Exception)
 def handle_global_exception(e):
-  if isinstance(e, HTTPException):[cite: 3]
-    return e[cite: 3]
-  print("❌ [服务端未捕获异常]:", e)[cite: 3]
-  traceback.print_exc()[cite: 3]
-  return jsonify({"success": False, "msg": f"服务端发生异常: {str(e)}"}), 500[cite: 3]
+  if isinstance(e, HTTPException):
+    return e
+  print("❌ [服务端未捕获异常]:", e)
+  traceback.print_exc()
+  return jsonify({"success": False, "msg": f"服务端发生异常: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
-  recover_counts_from_records()[cite: 3]
-  app.run(host="0.0.0.0", port=5000, debug=False)[cite: 3]
+  recover_counts_from_records()
+  app.run(host="0.0.0.0", port=5000, debug=False)
