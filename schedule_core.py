@@ -3,7 +3,7 @@ import random
 import datetime
 import threading
 
-# ========== 强制时区：北京时间 UTC+8，永远不变 ==========
+# ========== 强制时区：北京时间 UTC+8 ==========
 def beijing_now():
     return datetime.datetime.utcnow() + datetime.timedelta(hours=8)
 
@@ -19,10 +19,10 @@ DEFAULT_ACTIVE_START = "08:00"
 DEFAULT_ACTIVE_END = "22:00"
 
 account_schedule = {}
-schedule_lock = threading.Lock()
+# 使用 RLock 可重入锁，彻底避免嵌套调用时的线程死锁
+schedule_lock = threading.RLock()
 
 def is_in_active_time(start_time: str, end_time: str) -> bool:
-    # 永远使用北京时间判断
     now = beijing_now().time()
     try:
         start_h, start_m = map(int, start_time.split(":"))
@@ -50,11 +50,6 @@ def get_account_schedule_config(acc_cfg):
     }
 
 def init_daily_plan(account_name, daily_min, daily_max, auto_published=0, manual_published=0):
-    """
-    初始化或获取当天的发文计划。
-    如果当天计划已存在，则返回现有计划（不覆盖已有的计数）。
-    如果不存在，则创建新计划，使用传入的 auto_published/manual_published（用于启动恢复）。
-    """
     today = get_today_str()
     with schedule_lock:
         if account_name in account_schedule:
@@ -103,23 +98,15 @@ def can_publish(account_name: str, acc_cfg: dict) -> bool:
     return True
 
 def get_daily_stats(account_name: str, acc_cfg: dict):
-    """
-    返回当天的统计数据：(auto_target, auto_published, manual_published)
-    如果当天计划不存在，则先创建。
-    """
     cfg = get_account_schedule_config(acc_cfg)
     plan = init_daily_plan(account_name, cfg["daily_min"], cfg["daily_max"])
     return plan["auto_target"], plan["auto_published"], plan["manual_published"]
 
 def set_daily_stats(account_name: str, acc_cfg: dict, auto_published=None, manual_published=None):
-    """
-    用于从记录恢复时手动设置计数。不会覆盖自动目标，仅更新已发数量。
-    """
     today = get_today_str()
     cfg = get_account_schedule_config(acc_cfg)
     with schedule_lock:
         if account_name not in account_schedule or account_schedule[account_name].get("date") != today:
-            # 先初始化
             init_daily_plan(account_name, cfg["daily_min"], cfg["daily_max"], 0, 0)
         plan = account_schedule[account_name]
         if auto_published is not None:
