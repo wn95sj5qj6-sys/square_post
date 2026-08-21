@@ -1,10 +1,14 @@
 import os
+import time
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+BASE_URL_V1 = "https://www.binance.com/bapi/composite/v1/public/pgc/openApi"
+BASE_URL_V2 = "https://www.binance.com/bapi/composite/v2/public/pgc/openApi"
+
 def get_session():
-    """构建带重试机制的 Session"""
+    """自动接管系统 VPN/代理的 Session"""
     session = requests.Session()
     session.trust_env = True
     retries = Retry(
@@ -17,65 +21,107 @@ def get_session():
     session.mount("http://", adapter)
     return session
 
-def upload_image_to_binance(file_path_or_bytes, api_key):
-    """
-    通过币安官方 OpenAPI 上传接口直传封面图片
-    返回币安生成的官方 CDN 图片链接
-    """
+def upload_image_to_binance_official(file_path, api_key):
+    """通过币安官方 v2 预签名通道上传图片并获取官方 CDN 直链"""
+    if not os.path.exists(file_path):
+        return ""
+
+    session = get_session()
+    headers = {
+        "X-Square-OpenAPI-Key": api_key.strip(),
+        "Content-Type": "application/json",
+        "clienttype": "binanceSkill"
+    }
+
+    file_name = os.path.basename(file_path)
+    ext = os.path.splitext(file_path)[1].lower()
+    mime_type = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/jpeg"
+
     try:
-        session = get_session()
-        headers = {
-            "X-Square-OpenAPI-Key": api_key.strip(),
-            "clienttype": "binanceSkill",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        
-        if isinstance(file_path_or_bytes, bytes):
-            files = {"file": ("cover.jpg", file_path_or_bytes, "image/jpeg")}
-        else:
-            if not os.path.exists(file_path_or_bytes):
-                return ""
-            files = {"file": ("cover.jpg", open(file_path_or_bytes, "rb"), "image/jpeg")}
-            
-        r = session.post(
-            "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/file/upload",
+        # 1. 预签名申请
+        presign_res = session.post(
+            f"{BASE_URL_V2}/image/presignedUrl",
             headers=headers,
-            files=files,
-            timeout=25
+            json={"imageName": file_name},
+            timeout=15
         )
-        j = r.json()
-        print("📥 币安官方图片上传接口返回:", j)
-        if j.get("code") == "000000" or j.get("success"):
-            data_info = j.get("data")
-            if isinstance(data_info, dict):
-                return data_info.get("url") or data_info.get("imageUrl") or data_info.get("fileUrl") or ""
-            elif isinstance(data_info, str):
-                return data_info
+        presign_data = presign_res.json()
+        if presign_data.get("code") != "000000" or not presign_data.get("data"):
+            print(f"❌ 预签名申请失败: {presign_data}")
+            return ""
+
+        upload_url = presign_data["data"]["presignedUrl"]
+        file_ticket = presign_data["data"]["fileTicket"]
+
+        # 2. 直传二进制流
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+
+        put_res = session.put(
+            upload_url,
+            headers={"Content-Type": mime_type},
+            data=file_bytes,
+            timeout=30
+        )
+        if not put_res.ok:
+            print(f"❌ 二进制直传失败: {put_res.status_code}")
+            return ""
+
+        # 3. 轮询获取官方 CDN 链接
+        for _ in range(15):
+            time.sleep(1.2)
+            status_res = session.post(
+                f"{BASE_URL_V2}/image/imageStatus",
+                headers=headers,
+                json={"fileTicket": file_ticket},
+                timeout=10
+            )
+            status_data = status_res.json()
+            if status_data.get("code") == "000000" and status_data.get("data"):
+                data_obj = status_data["data"]
+                if data_obj.get("status") == 1 and data_obj.get("imageUrl"):
+                    cdn_url = data_obj["imageUrl"]
+                    print(f"✅ 官方 CDN 直链就绪: {cdn_url}")
+                    return cdn_url
+
     except Exception as e:
-        print("❌ 上传图片到币安官方接口失败:", e)
+        print(f"❌ 图片上传异常: {e}")
+
     return ""
 
-def post_content(content, api_key):
-    """发布短动态（进入【动态】分类）"""
+def post_content(content, api_key, image_paths=None):
+    """
+    发布动态（短动态 / 多图动态，支持 1~4 张原生高清图）
+    - 外部列表与点进详情页均能原生展示多图画廊
+    """
     try:
         session = get_session()
         headers = {
             "X-Square-OpenAPI-Key": api_key.strip(),
             "Content-Type": "application/json",
-            "clienttype": "binanceSkill",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "clienttype": "binanceSkill"
         }
-        data = {
+
+        uploaded_urls = []
+        if image_paths:
+            for img_path in image_paths[:4]: # 最多4张
+                if os.path.exists(img_path):
+                    url = upload_image_to_binance_official(img_path, api_key)
+                    if url:
+                        uploaded_urls.append(url)
+
+        payload = {
             "bodyTextOnly": content.strip(),
             "contentType": 1
         }
-        r = session.post(
-            "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add",
-            headers=headers,
-            json=data,
-            timeout=25
-        )
+        if uploaded_urls:
+            payload["images"] = uploaded_urls
+            payload["imageList"] = uploaded_urls
+
+        print("📦 最终发送给【图文动态】接口的 Payload:", payload)
+        r = session.post(f"{BASE_URL_V1}/content/add", headers=headers, json=payload, timeout=25)
         j = r.json()
+        print("📥 币安动态发帖返回:", j)
         if j.get("code") == "000000" or j.get("success"):
             data_info = j.get("data")
             pid = data_info.get("id") if isinstance(data_info, dict) else data_info
@@ -84,21 +130,24 @@ def post_content(content, api_key):
     except Exception as e:
         return False, str(e), ""
 
-def post_article(title, content, api_key, cover_file_bytes=None, cover_url=""):
-    """长文章发布（优先通过币安官方通道直传图片）"""
+def post_article(title, content, api_key, cover_path=""):
+    """
+    发布广场长文章（带 16:9 封面）
+    - 外部列表展示封面卡片
+    - 详情页展示纯净排版正文
+    """
     try:
         session = get_session()
         headers = {
             "X-Square-OpenAPI-Key": api_key.strip(),
             "Content-Type": "application/json",
-            "clienttype": "binanceSkill",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "clienttype": "binanceSkill"
         }
 
         clean_title = title.strip()
         clean_content = content.strip()
 
-        data = {
+        payload = {
             "title": clean_title,
             "bodyText": clean_content,
             "bodyTextOnly": f"{clean_title}\n\n{clean_content}",
@@ -106,31 +155,18 @@ def post_article(title, content, api_key, cover_file_bytes=None, cover_url=""):
             "format": "MARKDOWN"
         }
 
-        # 1. 如果传了图片二进制数据，优先调用币安官方接口上传
-        final_cover_url = ""
-        if cover_file_bytes:
-            print("🚀 正在通过币安官方接口直传封面图片...")
-            final_cover_url = upload_image_to_binance(cover_file_bytes, api_key)
-            if final_cover_url:
-                print(f"✅ 币安官方图片上传成功，直链: {final_cover_url}")
+        # 上传封面图片至官方 CDN
+        if cover_path and os.path.exists(cover_path):
+            print("🚀 正在上传长文封面...")
+            official_cover_url = upload_image_to_binance_official(cover_path, api_key)
+            if official_cover_url:
+                payload["cover"] = official_cover_url
 
-        # 2. 如果官方上传未返回或直接提供了外部 cover_url
-        if not final_cover_url and cover_url:
-            final_cover_url = cover_url.strip()
+        print("📦 最终发送给【广场长文】接口的 Payload:", payload)
 
-        if final_cover_url:
-            data["cover"] = final_cover_url
-
-        print("📦 最终发送给发文接口的 Payload:", data)
-
-        r = session.post(
-            "https://www.binance.com/bapi/composite/v1/public/pgc/openApi/content/add",
-            headers=headers,
-            json=data,
-            timeout=30
-        )
+        r = session.post(f"{BASE_URL_V1}/content/add", headers=headers, json=payload, timeout=30)
         j = r.json()
-        print("📥 币安发文接口返回结果:", j)
+        print("📥 币安长文发帖返回:", j)
         if j.get("code") == "000000" or j.get("success"):
             data_info = j.get("data")
             pid = data_info.get("id") if isinstance(data_info, dict) else data_info
